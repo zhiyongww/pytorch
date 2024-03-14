@@ -232,10 +232,9 @@ jobs:
           IS_A100_RUNNER: ${{ contains(matrix.runner, 'a100') && '1' || '0' }}
 
         run: |
-          set -x
-
           # Fetch aws credential from IMDs
           eval "$(python3 .github/scripts/get_aws_session_tokens.py)"
+          set -x
 
           if [[ $TEST_CONFIG == 'multigpu' ]]; then
             TEST_COMMAND=.ci/pytorch/multigpu-test.sh
