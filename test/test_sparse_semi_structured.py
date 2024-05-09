@@ -1044,11 +1044,8 @@ class TestSparseSemiStructuredCUSPARSELT(TestCase):
         torch._cslt_sparse_mm
     """
     def setUp(self):
-<<<<<<< HEAD
-=======
         if not _IS_SM8X and not _IS_MI300x:
             self.skipTest('Only runs on SM80/MI300x')
->>>>>>> 305106de63 (add mi300x check, cusparselt/hipsparselt backend)
         if "cusparselt" not in SEMI_STRUCTURED_SUPPORTED_BACKENDS:
             self.skipTest('cuSPARSELt not enabled')
 
