@@ -21,12 +21,8 @@ from torch.sparse._semi_structured_conversions import (
 )
 
 from torch.testing import make_tensor
-<<<<<<< HEAD
 from torch.testing._internal.common_cuda import _get_torch_cuda_version
-=======
-
 from torch.testing._internal.common_cuda import GFX942_Exact
->>>>>>> 305106de63 (add mi300x check, cusparselt/hipsparselt backend)
 from torch.testing._internal.common_device_type import (
     dtypes,
     instantiate_device_type_tests,
@@ -573,9 +569,8 @@ def create_random_mask(shape) -> torch.Tensor:
 class TestSparseSemiStructuredTraining(TestCase):
 
     def setUp(self):
-        if not _IS_SM8X:
-            self.skipTest("SparseSemiStructuredTensor training only supported on SM8x (Ampere)")
-
+        if not _IS_SM8X and not _IS_MI300x:
+            self.skipTest('Only runs on SM80/MI300x')
         if IS_WINDOWS:
             self.skipTest('CUTLASS not supported on windows')
 
