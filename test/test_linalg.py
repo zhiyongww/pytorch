@@ -33,7 +33,7 @@ from torch.testing._internal.common_dtype import (
 )
 from torch.testing._internal.common_cuda import SM53OrLater, SM80OrLater, SM90OrLater, tf32_on_and_off, _get_magma_version, \
     _get_torch_cuda_version
-from torch.testing._internal.common_quantization import _group_quantize_tensor, _dynamically_quantize_per_channel
+#from torch.testing._internal.common_quantization import _group_quantize_tensor, _dynamically_quantize_per_channel
 from torch.testing._internal.common_mkldnn import bf32_on_and_off
 from torch.distributions.binomial import Binomial
 import torch.backends.opt_einsum as opt_einsum
@@ -4485,6 +4485,7 @@ class TestLinalg(TestCase):
         # disable tunableop buffer rotation for all tests everywhere, it can be slow
         import os
         os.environ["PYTORCH_TUNABLEOP_ROTATING_BUFFER_SIZE"] = "0"
+
         assert torch.cuda.tunable.is_enabled() is False, "TunableOp should be off by default"
         assert torch.cuda.tunable.tuning_is_enabled(), "TunableOp's tuning should be enabled by default"
         torch.cuda.tunable.tuning_enable(False)
@@ -4544,6 +4545,47 @@ class TestLinalg(TestCase):
         torch.cuda.tunable.set_max_tuning_iterations(100)
         assert torch.cuda.tunable.is_enabled() is False, "TunableOp should be off after resetting"
         assert torch.cuda.tunable.get_max_tuning_iterations() == 100
+
+    @onlyCUDA
+    @dtypes(*floating_types_and(torch.half))
+    def test_matmul_offline_tunableop(self, device, dtype):
+        import os
+        # record GEMM
+        os.putenv('PYTORCH_TUNABLEOP_ENABLED', '1')
+        os.putenv('PYTORCH_TUNABLEOP_TUNING', '0')
+        os.putenv('PYTORCH_TUNABLEOP_RECORD_UNTUNED', '1')
+
+        make_arg = partial(make_tensor, device=device, dtype=dtype)
+
+        for (size_x, size_y), nctg_x, nctg_y in product(self.gen_sizes_matmul(1), (True, False), (True, False)):
+            x = make_arg(size_x, noncontiguous=nctg_x)
+            y = make_arg(size_y, noncontiguous=nctg_y)
+            self.check_single_matmul(x, y)
+
+        ordinal = torch.cuda.current_device()
+        untuned_filename = f"tunableop_untuned{ordinal}.csv"
+        assert os.path.exists(untuned_filename)
+
+        # tuning the untuned GEMMs in file
+        os.putenv('PYTORCH_TUNABLEOP_ENABLED', '1')
+        os.putenv('PYTORCH_TUNABLEOP_VERBOSE', '0')
+        os.putenv('PYTORCH_TUNABLEOP_TUNING', '1')
+        
+        # set these to single iterations to keep it short but still exercise the code
+        torch.cuda.tunable.set_max_tuning_duration(1)
+        torch.cuda.tunable.set_max_tuning_iterations(1)
+        
+        torch.cuda.tunable.tune_gemm_in_file(untuned_filename)
+        result_filename = f"tunableop_results{ordinal}.csv"
+        assert os.path.exists(result_filename)
+        
+        # remove the files created above to avoid error 'Build left local git repository checkout dirty', ignore errors
+        for filename in [untuned_filename, result_filename]:
+            try:
+                import os
+                os.remove(filename)
+            finally:
+                pass
 
     @dtypes(torch.float, torch.complex64)
     def test_matmul_out_kernel_errors_with_autograd(self, device, dtype):
