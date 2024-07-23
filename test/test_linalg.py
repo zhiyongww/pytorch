@@ -4566,7 +4566,6 @@ class TestLinalg(TestCase):
             y = make_arg(size_y, noncontiguous=nctg_y)
             self.check_single_matmul(x, y)
 
-
         assert torch.cuda.tunable.is_enabled()
         assert torch.cuda.tunable.tuning_is_enabled() is False
         ordinal = torch.cuda.current_device()
@@ -4584,7 +4583,7 @@ class TestLinalg(TestCase):
         torch.cuda.tunable.tune_gemm_in_file(untuned_filename)
         result_filename = f"tunableop_results{ordinal}.csv"
         assert os.path.exists(result_filename)
-        
+
         # remove the files created above to avoid error 'Build left local git repository checkout dirty', ignore errors
         for filename in [untuned_filename, result_filename]:
             try:
