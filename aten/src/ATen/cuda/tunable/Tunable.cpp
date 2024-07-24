@@ -110,7 +110,7 @@ void TuningResultsManager::Add(const std::string& op_signature, const std::strin
 void TuningResultsManager::RecordUntuned( std::ofstream& untuned_file, const std::string& op_signature, const std::string& params_signature) {
   std::scoped_lock l{lock_};
   if (!untuned_file.good()){
-    TORCH_WARN("failed to open file for writing; untuned gemm will not be saved");
+    TORCH_WARN_ONCE("failed to open file for writing; untuned gemm will not be saved");
   }
   else{
     bool isNew = false;
@@ -129,7 +129,7 @@ void TuningResultsManager::RecordUntuned( std::ofstream& untuned_file, const std
 
     if (isNew){
       std::string device = c10::str(int(c10::cuda::current_device()));
-      untuned_file << "Untuned GPU " <<device<<","<< op_signature << "," << params_signature << std::endl;
+      untuned_file << op_signature << "," << params_signature << std::endl;
       TUNABLE_LOG3("Untuned,", op_signature, ",", params_signature);
     }
   }
@@ -321,7 +321,7 @@ TuningStatus TuningResultsValidator::ValidatePyTorchVersion(const std::string& v
 TuningContext::TuningContext() :
     enable_{false},
     tuning_enable_{true},
-    record_untuned_enable_{true},
+    record_untuned_enable_{false},
     manager_initialized_{false},
     write_file_on_exit_{true},
     numerics_check_enable_{false},
@@ -412,8 +412,8 @@ bool TuningContext::IsTuningEnabled() const {
 
 bool TuningContext::IsRecordUntunedEnabled() const {
   static const char *env = std::getenv("PYTORCH_TUNABLEOP_RECORD_UNTUNED");
-  if (env != nullptr && strcmp(env, "0") == 0) {
-    return false;
+  if (env != nullptr && strcmp(env, "1") == 0) {
+    return true;
   }
   return record_untuned_enable_;
 }
