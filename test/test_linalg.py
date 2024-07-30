@@ -4585,7 +4585,7 @@ class TestLinalg(TestCase):
         assert len(torch.cuda.tunable.get_validators()) > 0
         assert len(torch.cuda.tunable.get_results()) > 0
         assert torch.cuda.tunable.write_file()
-        
+
         result_filename = f"tunableop_results{ordinal}.csv"
         assert os.path.exists(result_filename)
 
@@ -4604,6 +4604,7 @@ class TestLinalg(TestCase):
         assert torch.cuda.tunable.is_enabled() is False, "TunableOp should be off after resetting"
         assert torch.cuda.tunable.get_max_tuning_iterations() == 100
 
+    @onlyCUDA
     @skipCUDAIfNotRocm
     @dtypes(torch.float)
     def test_bmm_tunableop_rocm(self, device, dtype):
