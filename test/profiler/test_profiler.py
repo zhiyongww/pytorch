@@ -1255,8 +1255,9 @@ class TestProfiler(TestCase):
 
     def test_profiler_fwd_bwd_link(self):
         with _profile(use_kineto=True) as prof:
-            t1, t2 = torch.ones(1, requires_grad=True), torch.ones(
-                1, requires_grad=True
+            t1, t2 = (
+                torch.ones(1, requires_grad=True),
+                torch.ones(1, requires_grad=True),
             )
             z = torch.add(t1, t2)
             y = torch.ones(1)
@@ -1310,8 +1311,9 @@ class TestProfiler(TestCase):
             torch._C._profiler._set_fwd_bwd_enabled_val(False)
 
             with _profile(use_kineto=True) as prof:
-                t1, t2 = torch.ones(1, requires_grad=True), torch.ones(
-                    1, requires_grad=True
+                t1, t2 = (
+                    torch.ones(1, requires_grad=True),
+                    torch.ones(1, requires_grad=True),
                 )
                 z = torch.add(t1, t2)
                 y = torch.ones(1)
@@ -2150,8 +2152,9 @@ class TestExperimentalUtils(TestCase):
 
     def test_utils_compute_self_time(self):
         with profile() as prof:
-            t1, t2 = torch.ones(1, requires_grad=True), torch.ones(
-                1, requires_grad=True
+            t1, t2 = (
+                torch.ones(1, requires_grad=True),
+                torch.ones(1, requires_grad=True),
             )
             z = torch.add(t1, t2)
             y = torch.ones(1)
