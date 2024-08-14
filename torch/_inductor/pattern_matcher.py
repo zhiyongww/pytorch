@@ -36,6 +36,7 @@ successful match or a `FailedMatch` object for a failure to match.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import dataclasses
 import functools
@@ -1612,6 +1613,10 @@ def is_mutation_op(node: torch.fx.Node) -> bool:
     elif node.op == "call_method":
         if _mutation_op_re.search(node.target):  # type: ignore[union-attr, arg-type]
             return True
+    if node.target is torch.ops.higher_order.auto_functionalized:
+        return False
+    # TODO: the following check is too conservative
+    # https://github.com/pytorch/pytorch/issues/132867
     return node.kwargs.get("out") is not None
 
 
@@ -1621,29 +1626,157 @@ def same_mutation_regions(a: torch.fx.Node, b: torch.fx.Node) -> bool:
     return a.meta["mutation_region_id"] == b.meta["mutation_region_id"]
 
 
-def get_mutation_region_id(graph: torch.fx.Graph, node: torch.fx.Node) -> int:
+# see get_mutation_region_id for details
+MutationRegionId = collections.namedtuple(
+    "MutationRegionId", ["barrier_id", "reinplace_id"]
+)
+
+
+def get_mutation_region_id(
+    graph: torch.fx.Graph, node: torch.fx.Node
+) -> MutationRegionId:
+    """Given a single node, compute a mutation region id for it.
+
+    `compute_mutation_region_ids` may have been called on the graph in the past.
+    The node need not have been in the graph at that time (we'll update it).
+
+    The mutation_region_id is meant to prevent interactions between nodes
+    in different regions. There are two cases:
+    1. if we have a mutable op in the graph (like set_), nodes before the set_
+       will have a different mutation_region_id from nodes after the set_.
+       We are not allowed to swap nodes that have different mutation_region_id
+       or add a new dependency on a node from before the set_ to after it.
+    2. if we have a functional op that needs to be reinplaced, all nodes that
+       interact with the reinplacing are marked with their own mutation_region_id.
+       This is meant to prevent optimizations that can interfere with the
+       reinplacing.
+
+    If you're writing a graph pass and want to respect these mutation region ids:
+    - if you want to swap two nodes, make sure they have the same mutation_region_id
+    - if you want to merge two nodes, make sure they have the same mutation_region_id
+    - if you want to add a node B that takes node A as input: make sure they have
+      the same mutation_region_id (after node B gets added)
+
+    The MutationRegionId is a (barrier_id, reinplace_id) tuple.
+    - The barrier_id is the number of mutation ops that have been seen before this node.
+       This is never None.
+    - The reinplace_id is None if the node doesn't interact with a reinplacing,
+      otherwise it is a unique id associated with the reinplacing.
+
+    """
     n = node
+    if "mutation_region_id" in n.meta:
+        return n.meta["mutation_region_id"]
+    if "alias_info" not in graph.owning_module.meta:
+        # alias info nonexistent, do a full recompute
+        compute_mutation_region_ids(graph)
+        return n.meta["mutation_region_id"]
+
+    # Backtrack to the first prev node that has a mutation_region_id
     while "mutation_region_id" not in n.meta and not is_start_of_fx_graph(graph, n):
         n = n.prev
-    mutation_region_id = n.meta.get("mutation_region_id", 0)
+
+    if is_start_of_fx_graph(graph, n):
+        barrier_counter = 0
+    else:
+        barrier_counter = n.meta["mutation_region_id"].barrier_id
+
+    # _update_mutation_region_id mutates the barrier_counter and the reinplace_counter.
+    # we need to set the barrier_counter back to it was at *this* point in the graph,
+    # and after we _update_mutation_region_id we need to update reinplace_counter.
+    # NB: there's a pre-existing bug here that there is undefined behavior when there
+    # is a new mutation op. https://github.com/pytorch/pytorch/issues/132932
+    graph_meta = {
+        "alias_info": graph.owning_module.meta["alias_info"],
+        "barrier_counter": barrier_counter,
+        "reinplace_counter": graph.owning_module.meta["reinplace_counter"],
+    }
+    _update_mutation_region_id(graph_meta, n)
     while n is not node:
         n = n.next
-        if is_mutation_op(n):
-            mutation_region_id += 1
-        n.meta["mutation_region_id"] = mutation_region_id
-    return mutation_region_id
+        _update_mutation_region_id(graph_meta, n)
+    graph.owning_module.meta["reinplace_counter"] = graph_meta["reinplace_counter"]
+    assert n.meta["mutation_region_id"] is not None
+    return n.meta["mutation_region_id"]
 
 
-def should_compute_mutation_region_ids(graph: torch.fx.GraphModule) -> bool:
-    return "mutation_region_id" not in next(iter(graph.nodes)).meta
+def should_compute_mutation_region_ids(graph: torch.fx.Graph) -> bool:
+    return (
+        "mutation_region_id" not in next(iter(graph.nodes)).meta
+        or "alias_info" not in graph.owning_module.meta
+    )
 
 
-def compute_mutation_region_ids(graph: torch.fx.GraphModule) -> None:
-    mutation_region_id = 0
+def compute_mutation_region_ids(graph: torch.fx.Graph) -> None:
+    """Given a graph, compute mutation region ids for each node.
+
+    See get_mutation_region_id for more details.
+    """
+    gm = graph.owning_module
+    from torch._inductor.fx_utils import AliasInfo
+
+    gm.meta["alias_info"] = AliasInfo(gm)
+    gm.meta["barrier_counter"] = 0
+    gm.meta["reinplace_counter"] = 0
+
     for nd in graph.nodes:
-        if is_mutation_op(nd):
-            mutation_region_id += 1
-        nd.meta["mutation_region_id"] = mutation_region_id
+        _update_mutation_region_id(gm.meta, nd)
+
+
+def _update_mutation_region_id(
+    graph_meta: Dict[str, Any], node: torch.fx.Node
+) -> MutationRegionId:
+    def update_ids(
+        node: torch.fx.Node,
+        barrier_id: Optional[int] = None,
+        reinplace_id: Optional[int] = None,
+    ) -> None:
+        if "mutation_region_id" not in node.meta:
+            node.meta["mutation_region_id"] = MutationRegionId(barrier_id, reinplace_id)
+            return
+        old_barrier_id, old_reinplace_id = node.meta["mutation_region_id"]
+        new_mutation_region_id = MutationRegionId(
+            old_barrier_id if barrier_id is None else barrier_id,
+            old_reinplace_id if reinplace_id is None else reinplace_id,
+        )
+        node.meta["mutation_region_id"] = new_mutation_region_id
+
+    def update_reinplace_id(
+        kwargs: Dict[str, Any], names_of_reinplace_targets: List[str]
+    ) -> None:
+        aliased_nodes = []
+        # Get all nodes that are aliases of all reinplacing candidates
+        for name in names_of_reinplace_targets:
+            arg = kwargs[name]
+            if isinstance(arg, list):
+                for a in arg:
+                    if a is not None:
+                        aliased_nodes.extend(graph_meta["alias_info"].find_aliases(a))
+            else:
+                if arg is not None:
+                    aliased_nodes.extend(graph_meta["alias_info"].find_aliases(arg))
+        assert len(aliased_nodes) >= 1, "must at least alias self"
+
+        # Give all of them the same reinplace_counter
+        for node_ref in aliased_nodes:
+            actual_node = node_ref()
+            if actual_node is None:
+                continue
+            update_ids(actual_node, reinplace_id=graph_meta["reinplace_counter"])
+        graph_meta["reinplace_counter"] += 1
+
+    if node.target is torch.ops.higher_order.auto_functionalized:
+        mutable_op = node.args[0]
+        assert isinstance(mutable_op, torch._ops.OpOverload)
+        names_of_reinplace_targets = (
+            torch._higher_order_ops.auto_functionalize.get_mutable_arg_names(mutable_op)
+        )
+        update_reinplace_id(node.kwargs, names_of_reinplace_targets)
+
+    if is_mutation_op(node):
+        graph_meta["barrier_counter"] += 1
+    update_ids(node, barrier_id=graph_meta["barrier_counter"])
+    return node.meta["mutation_region_id"]
 
 
 class PatternMatcherPass:

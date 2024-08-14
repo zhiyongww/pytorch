@@ -1,7 +1,8 @@
 # mypy: allow-untyped-defs
 import operator
+import weakref
 from collections import defaultdict
-from typing import Any, Callable, DefaultDict, Dict, Optional, Tuple, Type
+from typing import Any, Callable, DefaultDict, Dict, List, Optional, Tuple, Type
 
 import sympy
 
@@ -249,3 +250,71 @@ def is_node_realized(node: torch.fx.Node) -> bool:
 
     # Otherwise, assume node isn't realized
     return False
+
+
+# I can't get weakref.ReferenceType[torch.fx.Node] to work in python 3.8
+NodeRef = Any
+
+
+class AliasInfo:
+    """Use this to best-effort keep track of aliases for a GraphModule.
+
+    NOTE: this is best-effort, which means there are ways for this to fail.
+    Failure means that there is an alias but we don't report it being an alias.
+    Please audit your use case carefully before using.
+
+    This automatically incrementally updates. We assume that a GraphModule's
+    nodes's (target, args, kwargs) are immutable (which is not true,
+    but is a reasonable assumption in practice).
+    """
+
+    def __init__(self, gm: torch.fx.GraphModule):
+        self._data: weakref.WeakKeyDictionary[
+            torch.UntypedStorage, List[NodeRef]
+        ] = weakref.WeakKeyDictionary()
+        self._queue: List[NodeRef] = []
+        for node in gm.graph.nodes:
+            self._update_aliases(node)
+        # incrementally update aliases as new nodes get added.
+        # ASSUMPTION: the node.meta["val"] gets populated after the node
+        # gets created.
+        # We push the node to a queue and assume meta["val"] is available
+        # when find_aliases gets called.
+        gm._register_create_node_hook(UpdateAliasInfo(self))
+
+    def find_aliases(self, node: torch.fx.Node) -> List[NodeRef]:
+        for ref in self._queue:
+            nd = ref()
+            if nd:
+                self._update_aliases(nd)
+        self._queue.clear()
+        maybe_storage = get_node_storage_obj(node)
+        if maybe_storage is None:
+            return []
+        return self._data.get(maybe_storage, [])
+
+    def _update_aliases(self, node: torch.fx.Node) -> None:
+        maybe_storage = get_node_storage_obj(node)
+        if maybe_storage is None:
+            return
+        if maybe_storage not in self._data:
+            self._data[maybe_storage] = []
+        self._data[maybe_storage].append(weakref.ref(node))
+
+
+class UpdateAliasInfo:
+    def __init__(self, alias_info):
+        self.alias_info = alias_info
+
+    def __call__(self, node):
+        self.alias_info._queue.append(weakref.ref(node))
+
+
+def get_node_storage_obj(node: torch.fx.Node) -> Optional[torch.UntypedStorage]:
+    if "val" not in node.meta:
+        return None
+    if not isinstance(node.meta["val"], torch.Tensor):
+        return None
+    if not torch._C._has_storage(node.meta["val"]):
+        return None
+    return node.meta["val"].untyped_storage()
