@@ -36,6 +36,7 @@ from torch.testing._internal.common_utils import (  # type: ignore[attr-defined]
 )
 from torch.utils._device import set_device
 from torch.utils._pytree import tree_all_only, tree_any
+from torch.utils._storage_utils import get_storage_id, get_storage_size
 from torch.utils._traceback import (
     CapturedTraceback,
     format_traceback_short,
@@ -1245,6 +1246,24 @@ def f(x):
         rs = CapturedTraceback.format_all([tb, CapturedTraceback.extract()])
         self.assertEqual(len(rs), 2)
         self.assertIn("test_captured_traceback_format_all", "".join(rs[0]))
+
+
+class TestStorageUtils(TestCase):
+    def test_storage_id(self):
+        from torch.testing._internal.two_tensor import TwoTensor
+
+        t1 = torch.randn(1, 2, dtype=torch.float32)
+        t2 = TwoTensor(t1, TwoTensor(t1, t1))
+        i = get_storage_id(t1)
+        self.assertTrue(get_storage_id(t2), (i, (i, i)))
+
+    def test_storage_size(self):
+        from torch.testing._internal.two_tensor import TwoTensor
+
+        t1 = torch.randn(1, 2, dtype=torch.float32)
+        t2 = TwoTensor(t1, t1)
+        self.assertEqual(get_storage_size(t1), 1 * 2 * 4)
+        self.assertEqual(get_storage_size(t2), 1 * 2 * 4 * 2)
 
 
 if __name__ == "__main__":
