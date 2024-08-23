@@ -468,14 +468,40 @@ class _PipelineStageBase(ABC):
             out_val = self.submod(*args, **kwargs)
         return out_val
 
-    def backward_maybe_with_nosync(self, bwd_kwargs: Dict):
+    def backward_maybe_with_nosync(self, backward_type, bwd_kwargs: Dict):
         """
         Whether using PP with FSDP or DDP, there are some runtime differences between the last backward step and the
         other steps.  Namely, we need to accumulate gradients on previous steps and reduce them on the last step, but
         there are additional state-variables and performance considerations depending on the data parallelism used.
         This helper should adapt any pipeline parallel schedule to work with common/supported data parallel libraries.
         """
-        last_backward = self._seen_bwd_chunks == self.chunks - 1  # type: ignore[operator]
+        if backward_type == "full":
+            last_backward = self._seen_bwd_chunks == self.chunks - 1  # type: ignore[operator]
+        else:
+            # For backwards are split into weight and input, we will see twice as many bwd_chunks
+            last_backward = self._seen_bwd_chunks == 2 * self.chunks - 1  # type: ignore[operator]
+
+        params = self.submod.parameters()
+        def perform_backward(backward_type):
+            if backward_type == "full":
+                return lambda: stage_backward(
+                    bwd_kwargs["stage_output"],
+                    bwd_kwargs["output_grads"],
+                    bwd_kwargs["input_values"],
+                )
+            elif backward_type == "input":
+                return lambda: stage_backward_input(
+                    bwd_kwargs["stage_output"],
+                    bwd_kwargs["output_grads"],
+                    bwd_kwargs["input_values"],
+                    params,
+                )
+            elif backward_type == "weight":
+                return lambda: stage_backward_weight(
+                    params, bwd_kwargs["param_groups"]
+                )
+            else:
+                raise RuntimeError(f"Unknown backward type: {backward_type}")
 
         # If submod is wrapped by DDP
         if isinstance(self.submod, DistributedDataParallel):
@@ -489,21 +515,39 @@ class _PipelineStageBase(ABC):
                         )
                     )
                 )
-                grads_input = stage_backward(**bwd_kwargs)
+                result = perform_backward(backward_type)()
             else:
                 with self.submod.no_sync():  # type: ignore[operator]
-                    grads_input = stage_backward(**bwd_kwargs)
+                    result = perform_backward(backward_type)()
         # If submod is a FSDP module
         elif isinstance(self.submod, FSDPModule):
+            # used for FSDP
+            if backward_type == "input":
+                print(f"[{self.stage_index}] input: {last_backward=} {self._seen_bwd_chunks=}, {self.chunks=}")
+                self.submod.set_reshard_after_backward(False)
+            elif backward_type == "weight":
+                print(f"[{self.stage_index}] weight: {last_backward=} {self._seen_bwd_chunks=}, {self.chunks=}")
+                self.submod.set_reshard_after_backward(last_backward)
+                if last_backward:
+                    print(f"[{dist.get_global_rank(self.group, self.group_rank)}-{self.stage_index}] BEFORE! {next(self.submod.parameters())=}")
             self.submod.set_is_last_backward(last_backward)
             self.submod.set_requires_gradient_sync(last_backward)
-            grads_input = stage_backward(**bwd_kwargs)
+            result = perform_backward(backward_type)()
+            if last_backward:
+                print(f"[{dist.get_global_rank(self.group, self.group_rank)}-{self.stage_index}] AFTER! {next(self.submod.parameters())=}")
         else:
             # Non-DP submodule, regular backward
-            grads_input = stage_backward(**bwd_kwargs)
+            result = perform_backward(backward_type)()
 
         self._seen_bwd_chunks += 1
-        return grads_input
+
+        if isinstance(result, tuple) and len(result) == 2:
+            # for stage_backward_input()
+            grads, param_groups = result
+        else:
+            grads, param_groups = result, None
+
+        return grads, param_groups
 
     def forward_one_chunk(
         self,
@@ -615,37 +659,41 @@ class _PipelineStageBase(ABC):
         if self.dw_builder:
             # TODO: We may want to change our semantics so we are allowed to ignore
             # the 'dw_builder' and call full_backward directly when it is a full_backward op.
-            self.grads_input = self.backward_maybe_with_nosync(bwd_kwargs)
+            self.grads_input, _ = self.backward_maybe_with_nosync("full", bwd_kwargs)
             if full_backward:
                 self.dw_builder()()
             else:
                 self.dw_runner[bwd_chunk_id] = self.dw_builder()
         else:
             if full_backward:
-                self.grads_input = self.backward_maybe_with_nosync(bwd_kwargs)
+                self.grads_input, _ = self.backward_maybe_with_nosync(
+                    "full", bwd_kwargs
+                )
             else:
                 # perform the partial backwards for the inputs with a custom backward function
                 # when the "stage_ouput" is a loss, then it is a tensor, otherwise it is a tuple of tensors
                 if isinstance(bwd_kwargs["stage_output"], torch.Tensor):
                     bwd_kwargs["stage_output"] = (bwd_kwargs["stage_output"],)
 
-                dinputs, param_groups = stage_backward_input(
-                    bwd_kwargs["stage_output"],
-                    bwd_kwargs["output_grads"],
-                    bwd_kwargs["input_values"],
-                    self.submod.parameters(),
+                module_params = self.submod.named_parameters()
+                # for name, param in module_params:
+                #     print(f"{self.log_prefix}{name=}, {param=}")
+                grads_input, param_groups = self.backward_maybe_with_nosync(
+                    "input", bwd_kwargs
                 )
+
+
                 # TODO: we dont need to save this, add to dw_runner?
                 self.backward_state[bwd_chunk_id] = (
-                    dinputs,
                     input_values,
                     param_groups,
                     bwd_kwargs["stage_output"],
                     bwd_kwargs["output_grads"],
+                    module_params,
                 )
-                self.grads_input = dinputs
-                # save a dw_runner with the `stage_backward_weight` function
-                self.dw_runner[bwd_chunk_id] = stage_backward_weight
+                self.grads_input = grads_input
+                # Save a placeholder for the dw_runner
+                self.dw_runner[bwd_chunk_id] = lambda: None
         logger.debug("%s Backwarded chunk %s", self.log_prefix, bwd_chunk_id)
 
     def backward_weight_one_chunk(self, bwd_chunk_id: int):
@@ -658,23 +706,40 @@ class _PipelineStageBase(ABC):
             self.dw_runner.pop(bwd_chunk_id)()
         else:
             (
-                dinputs,
                 input_values,
                 param_groups,
                 stage_output,
                 output_grads,
+                module_params,
             ) = self.backward_state.pop(bwd_chunk_id)
+
+            # print(f"testing")
+            # if module_params != self.submod.named_parameters():
+            #     print(module_params), print(self.submod.named_parameters())
+            #     print("The following named parameters are different:")
+            #     for name, param1 in module_params:
+            #         param2 = dict(self.submod.named_parameters())[name]
+            #         if param1 is not param2:
+            #             print(f"{name}: {param1} vs {param2}")
+
             if self.stage_index != 0:
-                dweights = self.dw_runner.pop(bwd_chunk_id)(
-                    self.submod.parameters(), param_groups
-                )
+                bwd_kwargs = {
+                    "stage_output": stage_output,
+                    "param_groups": param_groups,
+                }
+                weight_grads, _ = self.backward_maybe_with_nosync("weight", bwd_kwargs)
             else:
                 # TODO: figure out a better way to do this:
                 # if inputs does not require gradient,
                 # then the parameter group will not be fully captured during stage_backward_input
                 # in this case, we need call grad directly on the parameters
                 # To solve: make input fn do the intersect compute and then finish it off during W
-                torch.autograd.backward(stage_output, grad_tensors=output_grads)
+                bwd_kwargs = {
+                    "stage_output": stage_output,
+                    "output_grads": output_grads,
+                    "input_values": input_values,
+                }
+                self.backward_maybe_with_nosync("full", bwd_kwargs)
 
     def _validate_fwd_input(self, args, kwargs):
         """Raises a RuntimeError if shapes of input args/kwargs do not match the shapes configured for this stage."""
