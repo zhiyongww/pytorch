@@ -11197,7 +11197,7 @@ foreach_reduce_op_db: List[ForeachFuncInfo] = [
 foreach_other_op_db: List[ForeachFuncInfo] = [
     ForeachFuncInfo(
         "lerp",
-        sample_inputs_func=foreach_inputs_sample_func(3, True, False),
+        sample_inputs_func=foreach_lerp_sample_func(3, True, True),
         supports_autograd=True,
         supports_inplace_autograd=True,
         supports_forward_ad=True,
