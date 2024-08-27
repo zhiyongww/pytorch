@@ -10116,6 +10116,48 @@ foreach_unary_op_db: List[OpInfo] = [
         ),
     ),
     ForeachFuncInfo(
+        'rsqrt',
+        sample_inputs_func=foreach_inputs_sample_func(1, False, False),
+        supports_autograd=True,
+        supports_inplace_autograd=True,
+        supports_forward_ad=True,
+        backward_requires_result=True,
+        decorators=(
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestMeta",
+                "test_dispatch_meta_inplace",
+                dtypes=integral_types_and(torch.bool),
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestMeta",
+                "test_dispatch_symbolic_meta_inplace",
+                dtypes=integral_types_and(torch.bool),
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestMeta",
+                "test_meta_inplace",
+                dtypes=integral_types_and(torch.bool),
+            ),
+            # note(crcrpar): There seem to be two issus.
+            # One is "max(): Expected reduction dim to be specified for input.numel() == 0. "
+            # "Specify the reduction dim with the 'dim' argument.",
+            # and the other is
+            # torch.autograd.gradcheck.GradcheckError: Jacobian mismatch for output 0 with respect to input 0,
+            #   numerical:tensor(nan, device='cuda:0', dtype=torch.float64)
+            #   analytical:tensor(nan, device='cuda:0', dtype=torch.float64)
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestForeach",
+                "test_autodiff",
+                dtypes=(torch.float64,),
+                active_if=lambda kwargs: not kwargs["inplace"],
+            ),
+        ),
+    ),
+    ForeachFuncInfo(
         'ceil',
         sample_inputs_func=foreach_inputs_sample_func(1, False, False),
         supports_autograd=True,
