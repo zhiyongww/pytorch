@@ -9,6 +9,7 @@ half, float, double and bfloat16) and complex :class:`Tensor` types (cfloat, cdo
 """
 
 import warnings
+import traceback
 from typing import cast, List, Optional, Sequence, Tuple, Union
 
 import torch
@@ -31,6 +32,7 @@ from .grad_mode import (
 from .gradcheck import gradcheck, gradgradcheck
 from .graph import _engine_run_backward
 from .variable import Variable
+from torch._logging import getArtifactLogger
 
 
 __all__ = [
@@ -54,6 +56,7 @@ __all__ = [
 
 _OptionalTensor = Optional[torch.Tensor]
 _ShapeorNestedShape = Union[_size, Sequence[_size], torch.Tensor]
+verbose_log = getArtifactLogger(__name__, "compiled_autograd_verbose")
 
 
 def _calculate_shape(
@@ -344,6 +347,8 @@ def backward(
     # The reason we repeat the same comment below is that
     # some Python versions print out the first line of a multi-line function
     # calls in the traceback and some print out the last line
+    stack = ''.join(traceback.format_stack())
+    verbose_log.debug(f"calling torch.autograd.backward from {stack}")
     _engine_run_backward(
         tensors,
         grad_tensors_,
@@ -366,6 +371,8 @@ def grad(
     is_grads_batched: bool = False,
     materialize_grads: bool = False,
 ) -> Tuple[torch.Tensor, ...]:
+    stack = ''.join(traceback.format_stack())
+    verbose_log.debug(f"calling torch.autograd.grad from {stack}")
     r"""Compute and return the sum of gradients of outputs with respect to the inputs.
 
     ``grad_outputs`` should be a sequence of length matching ``output``
