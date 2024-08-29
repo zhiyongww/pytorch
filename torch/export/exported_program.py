@@ -5,7 +5,6 @@ import copy
 import dataclasses
 import functools
 import operator
-import re
 import types
 import warnings
 from collections import namedtuple
@@ -26,8 +25,10 @@ from typing import (
 
 from torch._higher_order_ops.utils import autograd_not_implemented
 from torch._library.fake_class_registry import FakeScriptObject
+from torch.fx._utils import first_call_function_nn_module_stack
 from torch.fx.graph import _PyTreeCodeGen, _PyTreeInfo
 from torch.fx.immutable_collections import immutable_dict, immutable_list
+from torch.fx.passes.runtime_assert import insert_deferred_runtime_asserts
 
 
 if TYPE_CHECKING:
@@ -41,15 +42,30 @@ if TYPE_CHECKING:
 
 import torch
 import torch.utils._pytree as pytree
+from torch._export.utils import (
+    _collect_and_set_constant_attrs,
+    _collect_param_buffer_metadata,
+    _detect_fake_mode_from_gm,
+    _get_shape_env_from_gm,
+    _name_hoo_subgraph_placeholders,
+    _overwrite_signature_for_non_persistent_buffers,
+    _populate_param_buffer_metadata_to_new_gm,
+    _rename_without_collisions,
+)
 from torch._export.verifier import Verifier
+from torch._guards import detect_fake_mode
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch._subclasses.functional_tensor import FunctionalTensor
+from torch.export._remove_unneccessary_copy_op_pass import (
+    _remove_unneccessary_copy_op_pass,
+)
+from torch.export._reorder_placeholder_same_as_original_ep_pass import (
+    _reorder_placeholder_same_as_original_ep_pass,
+)
 from torch.export._tree_utils import is_equivalent, reorder_kwargs
 from torch.fx._compatibility import compatibility
-from torch.fx._utils import first_call_function_nn_module_stack
 from torch.fx.passes.infra.pass_base import PassResult
 from torch.fx.passes.infra.pass_manager import PassManager
-from torch.fx.passes.runtime_assert import insert_deferred_runtime_asserts
 
 from .graph_signature import (  # noqa: F401
     ArgumentSpec,
@@ -271,227 +287,9 @@ def _override_decomp_aten_to_variants():
         yield
 
 
-def _rename_without_collisions(
-    name_map: Dict[str, str],
-    orig_name: str,
-    name: str,
-    is_placeholder: bool = False,
-):
-    """
-    Renames nodes to avoid name collisions, with suffixing.
-    name_map: map from original name to new name
-    orig_name: mapping key
-    name: candidate name (potentially suffixed, e.g. mul_2)
-    is_placeholder: if the node is a placeholder, avoid detecting suffix
-    """
-    if name in name_map.values():
-        # non-placeholder nodes may be suffixed with the count
-        # instead of adding another suffix, we will try to increment it
-        match = re.match(r"(.*)_(\d+)", name)
-        if match and not is_placeholder:
-            name, n = match.group(1), int(match.group(2))
-        else:
-            n = 0
-        while (dup_name := f"{name}_{n + 1}") in name_map.values():
-            n += 1
-        name_map[orig_name] = dup_name
-    else:
-        name_map[orig_name] = name
-    return name_map[orig_name]
-
-
-def _name_hoo_subgraph_placeholders(gm: torch.fx.GraphModule) -> None:
-    """
-    Propagate placeholder names from the top-level graph into HigherOrderOp subgraphs,
-    and handle collisions with non-placeholders by count suffixing.
-    Different HOO subgraph types have different input schemas, so we first enumerate them
-    and gather the top-level named placeholder nodes.
-    """
-    # gather all HOO subgraphs and their top-level named placeholder nodes
-    subgraph_ph_tuples: List[Tuple[torch.fx.GraphModule, List[torch.fx.Node]]] = []
-    for node in gm.graph.nodes:
-        if node.op == "call_function" and isinstance(
-            node.target, torch._ops.HigherOrderOperator
-        ):
-            # HOO subgraphs have varying input schemas, so we enumerate them there
-            if node.target._name == "cond":
-                _, true_graph, false_graph, cond_args = node._args
-                subgraph_ph_tuples.append((getattr(gm, true_graph.target), cond_args))
-                subgraph_ph_tuples.append((getattr(gm, false_graph.target), cond_args))
-            elif node.target._name == "wrap_with_set_grad_enabled":
-                subgraph, phs = node._args[1], node._args[2:]
-                subgraph_ph_tuples.append((getattr(gm, subgraph.target), phs))
-            elif node.target._name == "map_impl":
-                body_graph, array, args = node._args
-                subgraph_ph_tuples.append(
-                    (getattr(gm, body_graph.target), array + args)
-                )
-
-    # propagate names
-    for subgraph, hoo_phs in subgraph_ph_tuples:
-        name_map: Dict[str, str] = {}
-        for i, node in enumerate(subgraph.graph.nodes):
-            if i < len(hoo_phs):  # placeholder, retain name
-                name_map[node.name] = hoo_phs[i].name
-                node.name = node.target = hoo_phs[i].name
-            else:  # non-placeholder, check for collisions
-                node.name = _rename_without_collisions(name_map, node.name, node.name)
-
-        # recurse and recompile
-        _name_hoo_subgraph_placeholders(subgraph)
-        subgraph.recompile()
-
-
-def _decompose_and_get_gm_with_new_signature_constants(
-    ep,
-    *,
-    decomp_table: Dict[torch._ops.OperatorBase, Callable],
-    _preserve_ops: Tuple[torch._ops.OpOverload],
-    joint_loss_index: Optional[int],
-):
-    from torch._export.passes.lift_constants_pass import ConstantAttrMap
+def _decompose_to_joint_ir(ep, decomp_table, _preserve_ops, joint_loss_index):
     from torch._functorch.aot_autograd import aot_export_module
-    from torch._guards import detect_fake_mode
-    from torch._subclasses.fake_tensor import FakeTensorMode
-    from torch.export._trace import (
-        _export_to_aten_ir,
-        _fakify_params_buffers,
-        _ignore_backend_decomps,
-        _verify_nn_module_stack,
-        _verify_placeholder_names,
-        _verify_stack_trace,
-    )
-    from torch.fx.experimental.symbolic_shapes import ShapeEnv
-
-    if ep.verifier.dialect == "TRAINING":
-        mod = ep.module()
-        fake_args = [
-            node.meta["val"] for node in mod.graph.nodes if node.op == "placeholder"
-        ]
-        fake_mode = torch._export.utils._detect_fake_mode_from_gm(mod)
-        if fake_mode is None:
-            fake_mode = FakeTensorMode(shape_env=ShapeEnv(), export=True)
-
-        # Fix the graph output signature to be tuple if scalar
-        out_spec = mod._out_spec
-
-        orig_arg_names = mod.graph._codegen.pytree_info.orig_args  # type: ignore[attr-defined]
-
-        # aot_export expect the return type to always be a tuple.
-        if out_spec.type not in (list, tuple):
-            out_spec = pytree.TreeSpec(tuple, None, [out_spec])
-
-        mod.graph._codegen = _PyTreeCodeGen(
-            _PyTreeInfo(
-                orig_arg_names,
-                mod._in_spec,
-                out_spec,
-            )
-        )
-
-        mod.recompile()
-
-        # the exported module will store constants & non-persistent buffers such that
-        # retracing treats them as persistent buffers, so we inform the constants lifting pass
-        # and overwrite the new graph signature using the previous program.
-        constant_attrs = ConstantAttrMap()
-        non_persistent_buffers = {
-            spec.target
-            for spec in ep.graph_signature.input_specs
-            if spec.kind == InputKind.BUFFER and not spec.persistent
-        }
-        for name, value in ep.constants.items():
-            if name in non_persistent_buffers:
-                continue
-            # recursive getattr
-            _mod = mod
-            *atoms, attr = name.split(".")
-            for atom in atoms:
-                _mod = getattr(_mod, atom)
-            # remove as buffer, reassign as constant/non-persistent buffer
-            _mod._buffers.pop(attr, None)
-            setattr(_mod, attr, value)
-            constant_attrs.add(value, name)
-
-        # get params & buffers after excluding constants
-        fake_params_buffers = _fakify_params_buffers(fake_mode, mod)
-
-        params_buffers_to_node_meta = {}
-        for node in mod.graph.nodes:
-            target = node.target
-            meta = node.meta
-            if node.op == "get_attr":
-                params_buffers_to_node_meta[target] = meta
-
-            # If the call_function uses param as input, we also need to update params' meta
-            # with this call_function node's meta.
-            # This is basically the same flow as torch.fx.traceback.preserve_meta()
-            if node.op == "call_function" and not isinstance(
-                node.target, torch._ops.HigherOrderOperator
-            ):
-                for arg in node._input_nodes:
-                    if arg.op == "get_attr":
-                        for entry in torch.fx.proxy._COPY_META_FIELDS:
-                            if entry in meta:
-                                params_buffers_to_node_meta[arg.target][entry] = meta[
-                                    entry
-                                ]
-
-        with fake_mode, _override_decomp_aten_to_variants():
-            fake_args_unwrapped = pytree.tree_unflatten(fake_args, mod._in_spec)
-            aten_export_artifact = _export_to_aten_ir(
-                mod,
-                # this requires empty kwargs, but not in pytree.flattened format
-                (
-                    *fake_args_unwrapped[0],
-                    *fake_args_unwrapped[1].values(),
-                ),
-                {},
-                fake_params_buffers,
-                constant_attrs,
-                _check_autograd_state=False,
-            )
-
-        gm = aten_export_artifact.gm
-        new_graph_signature = aten_export_artifact.sig
-
-        for node in gm.graph.nodes:
-            # nn_module_stack
-            if node.op not in ["placeholder", "output"]:
-                for key, (fqn, mod_cls) in node.meta["nn_module_stack"].items():
-                    if isinstance(mod_cls, type):
-                        node.meta["nn_module_stack"][key] = (
-                            fqn,
-                            mod_cls.__module__ + "." + mod_cls.__qualname__,
-                        )
-
-        # Don't copy over nn_module_stack, stack_trace metadata for params/buffers nodes
-        for metadata in params_buffers_to_node_meta.values():
-            metadata.pop("nn_module_stack", None)
-            metadata.pop("stack_trace", None)
-
-        for node in gm.graph.nodes:
-            if node.op == "placeholder":
-                if node.target in new_graph_signature.inputs_to_parameters:
-                    param_name = new_graph_signature.inputs_to_parameters[node.target]
-                    if param_name in params_buffers_to_node_meta:
-                        for k, v in params_buffers_to_node_meta[param_name].items():
-                            node.meta[k] = v
-                if node.target in new_graph_signature.inputs_to_buffers:
-                    buffer_name = new_graph_signature.inputs_to_buffers[node.target]
-                    if buffer_name in params_buffers_to_node_meta:
-                        for k, v in params_buffers_to_node_meta[buffer_name].items():
-                            node.meta[k] = v
-
-        # overwrite signature for non-persistent buffers
-        for spec in new_graph_signature.input_specs:
-            if spec.kind == InputKind.BUFFER and spec.target in non_persistent_buffers:
-                spec.persistent = False
-
-        _verify_nn_module_stack(gm)
-        _verify_stack_trace(gm)
-        _verify_placeholder_names(gm, new_graph_signature)
-        return gm, new_graph_signature
+    from torch.export._trace import _ignore_backend_decomps
 
     old_placeholders = [
         node for node in ep.graph_module.graph.nodes if node.op == "placeholder"
@@ -561,7 +359,7 @@ def _decompose_and_get_gm_with_new_signature_constants(
             'File "torch/fx/passes/runtime_assert.py", line 24, '
             "in insert_deferred_runtime_asserts"
         )
-        shape_env = _get_shape_env(gm)
+        shape_env = _get_shape_env_from_gm(gm)
         if shape_env is not None:
             with _set_node_metadata_hook(
                 gm, functools.partial(_node_metadata_hook, stack_trace=stack_trace)
@@ -596,17 +394,29 @@ def _decompose_and_get_gm_with_new_signature_constants(
         )
         for i, spec in enumerate(ep.graph_signature.input_specs)
     ]
-    output_specs = [
-        OutputSpec(
-            spec.kind,
-            update_arg(spec.arg, new_outputs[i]),
-            old_new_placeholder_map.get(spec.target, spec.target),
-        )
-        for i, spec in enumerate(ep.graph_signature.output_specs)
-    ]
+
+    if joint_loss_index is None:
+        output_specs = [
+            OutputSpec(
+                spec.kind,
+                update_arg(spec.arg, new_outputs[i]),
+                old_new_placeholder_map.get(spec.target, spec.target),
+            )
+            for i, spec in enumerate(ep.graph_signature.output_specs)
+        ]
+    else:
+        output_specs = [
+            OutputSpec(
+                OutputKind.LOSS_OUTPUT,
+                update_arg(spec.arg, new_outputs[i]),
+                old_new_placeholder_map.get(spec.target, spec.target),
+            )
+            for i, spec in enumerate(ep.graph_signature.output_specs)
+        ]
 
     if joint_loss_index is not None:
         assert graph_signature.backward_signature is not None
+
         gradients = graph_signature.backward_signature.gradients_to_user_inputs
         assert len(graph_signature.user_inputs) == len(ep.graph_signature.input_specs)
         specs = {
@@ -675,6 +485,121 @@ def _common_getitem_elimination_pass(gm: torch.fx.GraphModule, graph_signature):
                         node_id[node] = new_id
                 else:
                     node_id[node] = node.name
+
+
+def _decompose_and_get_gm_with_new_signature_constants(
+    ep,
+    *,
+    decomp_table: Dict[torch._ops.OperatorBase, Callable],
+    _preserve_ops: Tuple[torch._ops.OpOverload],
+    joint_loss_index: Optional[int],
+):
+    from torch._subclasses.fake_tensor import FakeTensorMode
+    from torch.export._trace import (
+        _export_to_aten_ir,
+        _fakify_params_buffers,
+        _ignore_backend_decomps,
+        _verify_nn_module_stack,
+        _verify_placeholder_names,
+        _verify_stack_trace,
+    )
+    from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+    # Directly call aot_export_module if we are tracing joint graph or
+    # lowering joint graph to inference graph
+    if (
+        joint_loss_index is not None
+        or ep.graph_signature.backward_signature is not None
+    ):
+        return _decompose_to_joint_ir(ep, decomp_table, _preserve_ops, joint_loss_index)
+
+    mod = ep.module()
+
+    fake_args = []
+    for node in mod.graph.nodes:
+        if node.op == "placeholder":
+            fake_args.append(node.meta["val"])
+
+    fake_args_unwrapped = pytree.tree_unflatten(fake_args, mod._in_spec)
+    fake_mode = _detect_fake_mode_from_gm(mod)
+    if fake_mode is None:
+        fake_mode = FakeTensorMode(shape_env=ShapeEnv(), export=True)
+
+    # Fix the graph output signature to be tuple if scalar
+    out_spec = mod._out_spec
+
+    orig_arg_names = mod.graph._codegen.pytree_info.orig_args  # type: ignore[attr-defined]
+
+    # aot_export expect the return type to always be a tuple.
+    if out_spec.type not in (list, tuple):
+        out_spec = pytree.TreeSpec(tuple, None, [out_spec])
+
+    mod.graph._codegen = _PyTreeCodeGen(
+        _PyTreeInfo(
+            orig_arg_names,
+            mod._in_spec,
+            out_spec,
+        )
+    )
+
+    mod.recompile()
+
+    # the exported module will store constants & non-persistent buffers such that
+    # retracing treats them as persistent buffers, so we inform the constants lifting pass
+    # and overwrite the new graph signature using the previous program.
+    constant_attrs = _collect_and_set_constant_attrs(
+        ep.graph_signature, ep.constants, mod
+    )
+
+    # get params & buffers after excluding constants
+    fake_params_buffers = _fakify_params_buffers(fake_mode, mod)
+
+    params_buffers_to_node_meta = _collect_param_buffer_metadata(mod)
+
+    with _ignore_backend_decomps(), (
+        fake_mode
+    ), _override_decomp_aten_to_variants(), _override_composite_implicit_decomp(
+        _preserve_ops,
+        decomp_table,
+    ):
+        aten_export_artifact = _export_to_aten_ir(
+            mod,
+            # this requires empty kwargs, but not in pytree.flattened format
+            (
+                *fake_args_unwrapped[0],
+                *fake_args_unwrapped[1].values(),
+            ),
+            {},
+            fake_params_buffers,
+            constant_attrs,
+            decomp_table=decomp_table,
+            _check_autograd_state=False,
+        )
+
+    gm = aten_export_artifact.gm
+    new_graph_signature = aten_export_artifact.sig
+
+    _populate_param_buffer_metadata_to_new_gm(
+        params_buffers_to_node_meta, gm, new_graph_signature
+    )
+
+    # overwrite signature for non-persistent buffers
+    new_graph_signature = _overwrite_signature_for_non_persistent_buffers(
+        ep.graph_signature, new_graph_signature
+    )
+
+    _verify_nn_module_stack(gm)
+    _verify_stack_trace(gm)
+    _verify_placeholder_names(gm, new_graph_signature)
+
+    gm, new_graph_signature = _remove_unneccessary_copy_op_pass(gm, new_graph_signature)
+
+    return _reorder_placeholder_same_as_original_ep_pass(
+        gm,
+        new_graph_signature,
+        ep.graph_module,
+        ep.graph_signature,
+    )
 
 
 def _decompose_exported_program(
@@ -1210,29 +1135,13 @@ class ExportedProgram:
         )
 
 
-def _get_shape_env(gm):
-    vals = [
-        node.meta["val"]
-        for node in gm.graph.nodes
-        if node.meta.get("val", None) is not None
-    ]
-    from torch._guards import detect_fake_mode
-
-    fake_mode = detect_fake_mode(vals)
-    if fake_mode is not None:
-        return fake_mode.shape_env
-    for v in vals:
-        if isinstance(v, torch.SymInt):
-            return v.node.shape_env
-
-
 def _get_updated_range_constraints(
     gm: torch.fx.GraphModule,
     old_range_constraints: "Optional[Dict[sympy.Symbol, Any]]" = None,
 ) -> "Dict[sympy.Symbol, Any]":
     assert old_range_constraints is not None
 
-    shape_env = _get_shape_env(gm)
+    shape_env = _get_shape_env_from_gm(gm)
     if shape_env is None:
         return {}
 
