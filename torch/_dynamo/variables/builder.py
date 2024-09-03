@@ -289,7 +289,7 @@ class BackwardStateGraphArg(GraphArg):
     def __init__(self) -> None:
         super().__init__(
             source=None,
-            _example=BackwardState(),
+            _example=BackwardState.get_singleton(),
             pass_arg_as_tensor=False,
             fake_tensor=None,
             is_tensor=False,
@@ -297,12 +297,10 @@ class BackwardStateGraphArg(GraphArg):
 
     def reconstruct(self, codegen):
         assert codegen.tx.output.backward_state_var
-        codegen.add_push_null(
-            lambda: codegen.load_import_from(BackwardState.__module__, "BackwardState")
-        )
-        codegen.call_function(0, False)
+        varname = codegen.tx.output.new_var()
+        codegen.append_output(codegen.create_load_global(codegen.tx.output.backward_state_var, add=True))
         codegen.dup_top()
-        codegen.store(codegen.tx.output.backward_state_var)
+        codegen.store(varname)
 
 
 @dataclasses.dataclass

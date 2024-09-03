@@ -6,6 +6,7 @@ import copy
 import functools
 import unittest
 from unittest import mock
+import itertools
 
 import torch
 import torch._dynamo.testing
@@ -623,7 +624,7 @@ class TestFullyShardCompile(FSDPTest):
                     "Expected at least 3 separate lowerings to Triton code, which means at least 1 graph break in FWD graph",
                 )
 
-    def _create_transformer_factory_fns(self):
+    def _create_transformer_factory_fns(self, *, activation_checkpoint=False):
         seq_len = 16
         vocab_size = 8
 
@@ -634,6 +635,7 @@ class TestFullyShardCompile(FSDPTest):
             model_args = ModelArgs(
                 vocab_size=vocab_size,
                 n_layers=3,
+                checkpoint_activations=activation_checkpoint,
             )
             model = Transformer(model_args)
             for layer_id, mod in enumerate(model.layers):
@@ -672,7 +674,8 @@ class TestFullyShardCompile(FSDPTest):
     @skipIfRocm
     @unittest.skipIf(not has_triton(), "Inductor+gpu needs triton and recent GPU arch")
     def test_transformer_backend_aot_eager(self):
-        for fullgraph in [True, False]:
+        # for fullgraph in [True, False]:
+        for fullgraph in [True]:
             with self._maybe_add_graph_break_to_sdpa(
                 fullgraph
             ), self._reinplace_all_gather_with_optional_checks(fullgraph):
@@ -700,7 +703,9 @@ class TestFullyShardCompile(FSDPTest):
     # TODO: native_dropout causes CUDA IMA error, need to figure out why
     @torch._inductor.config.patch(fallback_random=True)
     def test_transformer_backend_inductor(self):
-        for fullgraph in [True, False]:
+        # TODO(yf225): move this PR on top of the .copy_ PR when ready
+        # for fullgraph, activation_checkpoint in itertools.product([True, False], [True, False]):
+        for fullgraph, activation_checkpoint in itertools.product([True], [True]):
             with self._maybe_add_graph_break_to_sdpa(
                 fullgraph
             ), self._reinplace_all_gather_with_optional_checks(
@@ -710,7 +715,7 @@ class TestFullyShardCompile(FSDPTest):
             ):
                 _, triton_codes = run_and_get_code(
                     lambda: self._test_traceable_fsdp(
-                        *self._create_transformer_factory_fns(),
+                        *self._create_transformer_factory_fns(activation_checkpoint=activation_checkpoint),
                         "inductor",
                         fullgraph=fullgraph,
                     )

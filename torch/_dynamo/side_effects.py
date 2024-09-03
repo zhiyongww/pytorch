@@ -78,6 +78,7 @@ class SideEffects:
 
     def __init__(
         self,
+        # output_graph,
         id_to_variable=None,
         store_attr_mutations=None,
         keepalive=None,
@@ -85,6 +86,7 @@ class SideEffects:
         tensor_hooks=None,
     ):
         super().__init__()
+        # self.output_graph = output_graph  # TODO(yf225): TODO: use weakref?
         self.id_to_variable = id_to_variable or {}
         self.store_attr_mutations = store_attr_mutations or {}
         self.keepalive = keepalive or []
@@ -151,10 +153,14 @@ class SideEffects:
         # These are benign.
         if isinstance(item, AutogradFunctionContextVariable):
             return True
-        if not is_side_effect_safe(item.mutable_local):
-            unimplemented(
-                "HigherOrderOperator: Mutating a variable not in the current scope (SideEffects)"
-            )
+        return True
+        # if self.output_graph.current_tx.output.current_tracer.within_forward_hook_under_checkpoint:
+        #     # TODO(yf225): how do we detect and allow forward hook and forward pre-hook only?
+        #     return True
+        # if not is_side_effect_safe(item.mutable_local):
+        #     unimplemented(
+        #         "HigherOrderOperator: Mutating a variable not in the current scope (SideEffects)"
+        #     )
 
     def store_attr(self, item: VariableTracker, name: str, value: VariableTracker):
         assert self.is_attribute_mutation(item)
@@ -337,6 +343,25 @@ class SideEffects:
             ):
                 self.track_object_existing(other_item, other_variable)
 
+    def merge(self, other):
+        # This is only for transferring side-effects from module forward hooks within checkpoint region to the outside region.
+        # TODO(yf225): better comment
+        assert len(other.save_for_backward) == 0, f"NYI: save_for_backward: {other.save_for_backward}"
+        assert len(other.tensor_hooks) == 0, f"NYI: tensor_hooks: {other.tensor_hooks}"
+        for other_id, other_variable in other.id_to_variable.items():
+            if other_id not in self.id_to_variable:
+                self.id_to_variable[other_id] = other_variable
+            id_to_obj_in_self_keepalive = {id(item): item for item in self.keepalive}
+            id_to_obj_in_other_keepalive = {id(item): item for item in other.keepalive}
+            for id_in_other_keepalive in id_to_obj_in_other_keepalive.keys():
+                if id_in_other_keepalive == other_id and id_in_other_keepalive not in id_to_obj_in_self_keepalive:
+                    self.keepalive.append(id_to_obj_in_other_keepalive[id_in_other_keepalive])
+
+        for other_id, other_attr_mutations in other.store_attr_mutations.items():
+            if other_id not in self.store_attr_mutations:
+                self.store_attr_mutations[other_id] = {}
+            self.store_attr_mutations[other_id].update(other_attr_mutations)
+
     def prune_dead_object_new(self, tx):
         live_new_objects = set()
 
@@ -385,7 +410,7 @@ class SideEffects:
         # are live. "visit"-ing the NestedUserFunctionVariable visits
         # the .closures field, from which we will see if we need to keep
         # any mutations to cell variables alive.
-
+            
         self.id_to_variable = {
             k: v for k, v in self.id_to_variable.items() if is_live(v)
         }

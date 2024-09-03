@@ -132,6 +132,7 @@ def call_hook_from_backward_state(*args, bw_state, hook_name: str, **kwargs):
     return getattr(bw_state, hook_name)(*args, **kwargs)
 
 
+# TODO: rename this to call_module_backward_hooks_from_backward_state ?
 def call_module_hooks_from_backward_state(
     _, result, *args, bw_state, hooks_name: str, module_name: str
 ):
@@ -142,3 +143,21 @@ def call_module_hooks_from_backward_state(
         if new_result is not None:
             result = new_result
     return result
+
+
+def call_module_forward_pre_hook_from_backward_state(
+    _, *args, bw_state, hook_name: str, module_name: str
+):
+    module = getattr(bw_state, module_name)
+    hook = getattr(bw_state, hook_name)
+    assert len(args) == 1  # should only have 1 TupleVariable which maps to hook args
+    return hook(module, args[0])
+
+
+def call_module_forward_hook_from_backward_state(
+    _, *args, bw_state, hook_name: str, module_name: str
+):
+    module = getattr(bw_state, module_name)
+    hook = getattr(bw_state, hook_name)
+    assert len(args) == 2  # should have 2 TupleVariable: one for hook args and one for hook outputs
+    return hook(module, args[0], args[1])

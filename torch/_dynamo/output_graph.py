@@ -410,8 +410,11 @@ class OutputGraph:
 
         # Use to pass values to backward hooks when using compiled autograd
         self.backward_state: Dict[str, VariableTracker] = {}
+        self.backward_state_obj = BackwardState.get_singleton()
         self.backward_state_proxy: Optional[torch.fx.Proxy] = None
-        self.backward_state_var: Optional[str] = None
+        self.backward_state_var: Optional[str] = self.install_global_by_id(
+            "bw_state", self.backward_state_obj
+        )
 
         self.name_of_builtins_dict_key_in_fglobals: str = (
             self.install_builtins_dict_in_fglobals()
@@ -452,8 +455,9 @@ class OutputGraph:
                 "dynamo_backward_state", BackwardState, source=BackwardStateSource()
             )
             self.backward_state_proxy.node.meta["grapharg"] = BackwardStateGraphArg()
-            set_example_value(self.backward_state_proxy.node, BackwardState())
-            self.backward_state_var = self.new_var()
+            assert self.backward_state_obj
+            self.backward_state_obj.proxy = self.backward_state_proxy
+            set_example_value(self.backward_state_proxy.node, self.backward_state_obj)
         return self.backward_state_proxy
 
     # This gets its own helper function so guards DEBUG logs are more informative
@@ -568,7 +572,7 @@ class OutputGraph:
                 prior_tracer
                 if prior_tracer
                 else SubgraphTracer(
-                    self, parent=self.current_tracer, source_target=source_target
+                    self, parent=self.current_tracer, source_target=source_target,
                 )
             )
             self.tracers.append(tracer)
@@ -1169,7 +1173,7 @@ class OutputGraph:
             assert not self.export
             for name, val in self.backward_state.items():
                 cg(val)
-                cg.append_output(cg.create_load(self.backward_state_var))
+                cg.append_output(cg.create_load_global(self.backward_state_var, add=True))
                 cg.store_attr(name)
         self.side_effects.codegen_hooks(cg)
         self.side_effects.codegen_save_tempvars(cg)
@@ -1832,6 +1836,7 @@ class SubgraphTracer(fx.Tracer):
         # Dicts maintain the order of args for the HigherOrderOperator call.
         self.lifted_freevars = {}
         self.prev_inst = None
+        self.within_forward_hook_under_checkpoint = False
 
         self._cur_code = None
         self._orig_gm_meta = None

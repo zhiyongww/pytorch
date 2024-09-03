@@ -4,6 +4,7 @@ import functools
 import math
 import unittest  # noqa: F811
 from importlib import import_module
+import contextlib
 
 import torch
 import torch._dynamo.config
@@ -21,6 +22,7 @@ from torch.testing._internal.common_cuda import (
     SM90OrLater,
 )
 from torch.testing._internal.common_utils import IS_WINDOWS, skipIfRocm
+from torch._dynamo import compiled_autograd
 from torch.testing._internal.inductor_utils import HAS_CUDA
 from torch.testing._internal.two_tensor import TwoTensor
 from torch.utils.checkpoint import (
@@ -28,6 +30,10 @@ from torch.utils.checkpoint import (
     CheckpointPolicy,
     create_selective_checkpoint_contexts,
 )
+from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+    apply_activation_checkpointing,
+)
+
 
 
 requires_cuda = unittest.skipUnless(HAS_CUDA, "requires cuda")
@@ -123,6 +129,11 @@ def _get_custom_policy(no_recompute_list=None, must_recompute_list=None):
             return CheckpointPolicy.PREFER_RECOMPUTE
 
     return _custom_policy
+
+class MyState:
+    def __init__(self) -> None:
+        self.fwd_pre_hook_call_count: int = 0
+        self.fwd_hook_call_count: int = 0
 
 
 class ActivationCheckpointingViaTagsTests(torch._dynamo.test_case.TestCase):
@@ -1286,6 +1297,213 @@ class ActivationCheckpointingViaTagsTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(1, 1)
 
         self.assertEqual(opt_fn(x), fn(x))
+
+    @requires_distributed()
+    @torch._dynamo.config.patch(inline_inbuilt_nn_modules=True)
+    def test_side_effect_in_forward_hooks(self):
+        """
+        NOTE(yf225): Status:
+        1. [WIP] Running forward pre-hook in compiled AC
+            - Questions: 
+            1. What if the partitioner is not planning to recompute those modules (and instead is planning to save the activations)? What does it mean to "rerun forward hook" for that case?
+            2. Do we really need to rerun forward hook in the backward? What fails if we don't?
+        2. [TODO] Running forward hook in compiled AC
+            - TODO: allow returning tuple from module forward hook
+        3. [TODO] Clean up and deduplicate (can we avoid global BackwardState?)
+
+        NOTE: We need support for both forward pre-hook and forward hook in AC region, because eager FSDP2 uses it
+        (verified by patching https://gist.github.com/yf225/ae73b47c14f56f2b96ea3bfdfe2ed30c and then running test_train_parity_with_activation_checkpointing unit test).
+        """
+        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+            CheckpointWrapper,
+        )
+
+        backend = "aot_eager"
+        cnt = CompileCounterWithBackend(backend)
+        cnt_ca = CompileCounterWithBackend(backend)
+
+        def fwd_pre_hook(state, m, args):
+            # TODO(yf225): explore how to support kwargs in forward hooks
+            state.fwd_pre_hook_call_count += 1
+            return args[0] * 7
+
+        # TODO(yf225): test module forward hook returns None case
+        def fwd_hook(state, m, args, outputs):
+            state.fwd_hook_call_count += 1
+            return outputs * 17
+
+        def fn(model, args, state, compiled=False):
+            if compiled:
+                ctx = compiled_autograd.enable(lambda gm: torch.compile(gm, backend=cnt_ca, fullgraph=True))
+            else:
+                ctx = contextlib.nullcontext()
+            with ctx:
+                self.assertEqual(state.fwd_pre_hook_call_count, 0)  # before forward
+                # self.assertEqual(state.fwd_hook_call_count, 0)  # before forward
+                out = model(*args)
+                self.assertEqual(state.fwd_pre_hook_call_count, 3)  # after forward
+                # self.assertEqual(state.fwd_hook_call_count, 3)  # after forward
+                print(f"out: {out}")
+                loss = out.sum()
+                loss.backward()
+                self.assertEqual(state.fwd_pre_hook_call_count, 6)  # after backward
+                # self.assertEqual(state.fwd_hook_call_count, 6)  # after backward
+                return out, loss
+
+        class TestModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = torch.nn.ModuleList([
+                    torch.nn.Linear(8, 8),
+                    torch.nn.Linear(8, 8),
+                    torch.nn.Linear(8, 8),
+                ])
+
+            def forward(self, x, y):
+                z = torch.matmul(x, y)
+                for layer in self.layers:
+                    z = layer(z)
+                return z
+
+        def test_fn(compiled=False, hook_using_partial=False):
+            torch.manual_seed(0)
+            mod = TestModel()
+            state = MyState()
+            if hook_using_partial:
+                for layer in mod.layers:
+                    layer.register_forward_pre_hook(functools.partial(fwd_pre_hook, state))
+                    # layer.register_forward_hook(functools.partial(fwd_hook, state))
+            else:
+                def _pre_hook(m, args):
+                    return fwd_pre_hook(state, m, args)
+                def _hook(m, args, outputs):
+                    return fwd_hook(state, m, args, outputs)
+                for layer in mod.layers:
+                    layer.register_forward_pre_hook(_pre_hook)
+                    # layer.register_forward_hook(_hook)
+            
+            for i in range(len(mod.layers)):
+                mod.layers[i] = CheckpointWrapper(mod.layers[i])
+            if compiled:
+                mod = torch.compile(mod, backend=cnt, fullgraph=True)
+            x = torch.randn(8, 8, requires_grad=True)
+            y = torch.randn(8, 8, requires_grad=True)
+            out, loss = fn(mod, (x, y), state, compiled=compiled)
+            layer_grads_list = [layer.weight.grad for layer in mod.layers]
+            return out, loss, layer_grads_list, (x.grad, y.grad)
+
+        ref_out, ref_loss, ref_layer_grads_list, ref_grads = test_fn(compiled=False)
+        out, loss, layer_grads_list, grads = test_fn(compiled=True, hook_using_partial=False)  # TODO(yf225): make hook_using_partial=True work
+        self.assertEqual(out, ref_out)
+        self.assertEqual(loss, ref_loss)
+        for layer_idx in range(num_layers-1, -1, -1):
+            self.assertEqual(layer_grads_list[layer_idx], ref_layer_grads_list[layer_idx], f"Gradient mismatch for layer {layer_idx}")
+        self.assertEqual(grads, ref_grads)
+        self.assertEqual(cnt.frame_count, 1)
+        self.assertEqual(cnt_ca.frame_count, 1)
+
+    @requires_distributed()
+    @torch._dynamo.config.patch(inline_inbuilt_nn_modules=True)
+    def test_side_effect_in_forward_hooks_multi_input_output(self):
+        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+            CheckpointWrapper,
+        )
+
+        num_layers = 3
+        backend = "aot_eager"
+        cnt = CompileCounterWithBackend(backend)
+        cnt_ca = CompileCounterWithBackend(backend)
+
+        def fwd_pre_hook(state, m, args):
+            # TODO(yf225): explore how to support kwargs in forward hooks
+            state.fwd_pre_hook_call_count += 1
+            return (args[0] * 7, args[1] * 13)
+
+        # TODO(yf225): test module forward hook returns None case
+        def fwd_hook(state, m, args, outputs):
+            state.fwd_hook_call_count += 1
+            return (outputs[0] * args[0] * 17, outputs[1] * args[1] * 19, outputs[2] * 23)
+
+        def fn(model, args, state, compiled=False):
+            if compiled:
+                ctx = compiled_autograd.enable(lambda gm: torch.compile(gm, backend=cnt_ca, fullgraph=True))
+            else:
+                ctx = contextlib.nullcontext()
+            with ctx:
+                self.assertEqual(state.fwd_pre_hook_call_count, 0)  # before forward
+                # self.assertEqual(state.fwd_hook_call_count, 0)  # before forward
+                out = model(*args)
+                self.assertEqual(state.fwd_pre_hook_call_count, 3)  # after forward
+                # self.assertEqual(state.fwd_hook_call_count, 3)  # after forward
+                print(f"out: {out}")
+                loss = out[2].sum()
+                loss.backward()
+                # self.assertEqual(state.fwd_pre_hook_call_count, 6)  # after backward
+                # self.assertEqual(state.fwd_hook_call_count, 6)  # after backward
+                return out, loss
+
+        class TestModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.l_x = torch.nn.Linear(8, 8)
+                self.l_y = torch.nn.Linear(8, 8)
+
+            def forward(self, x, y):
+                return torch.matmul(self.l_x(x), y), torch.matmul(self.l_y(y), x)
+
+        class TestModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = torch.nn.ModuleList([])
+                for _ in range(num_layers):
+                    self.layers.append(TestModule())
+
+            def forward(self, x, y):
+                for layer in self.layers:
+                    x, y = layer(x, y)
+                return x, y, torch.matmul(x, y)
+
+        def test_fn(compiled=False, hook_using_partial=False):
+            torch.manual_seed(0)
+            mod = TestModel()
+            state = MyState()
+            # if hook_using_partial:
+            if False:
+                # for layer in mod.layers:
+                #     layer.register_forward_pre_hook(functools.partial(fwd_pre_hook, state))
+                #     layer.register_forward_hook(functools.partial(fwd_hook, state))
+                pass
+            else:
+                def _pre_hook(m, args):
+                    return fwd_pre_hook(state, m, args)
+                def _hook(m, args, outputs):
+                    return fwd_hook(state, m, args, outputs)
+                for layer in mod.layers:
+                    layer.register_forward_pre_hook(_pre_hook)
+                    # layer.register_forward_hook(_hook)
+                    pass
+            
+            for i in range(len(mod.layers)):
+                mod.layers[i] = CheckpointWrapper(mod.layers[i])
+            if compiled:
+                mod = torch.compile(mod, backend=cnt, fullgraph=True)
+            x = torch.randn(8, 8, requires_grad=True)
+            y = torch.randn(8, 8, requires_grad=True)
+            out, loss = fn(mod, (x, y), state, compiled=compiled)
+            layer_grads_list = []
+            for layer in mod.layers:
+                layer_grads_list.append((layer.l_x.weight.grad, layer.l_y.weight.grad))
+            return out, loss, layer_grads_list, (x.grad, y.grad)
+
+        ref_out, ref_loss, ref_layer_grads_list, ref_grads = test_fn(compiled=False)
+        out, loss, layer_grads_list, grads = test_fn(compiled=True, hook_using_partial=False)  # TODO(yf225): make hook_using_partial=True work
+        self.assertEqual(out, ref_out)
+        self.assertEqual(loss, ref_loss)
+        for layer_idx in range(num_layers-1, -1, -1):
+            self.assertEqual(layer_grads_list[layer_idx], ref_layer_grads_list[layer_idx], f"Gradient mismatch for layer {layer_idx}")
+        self.assertEqual(grads, ref_grads)
+        self.assertEqual(cnt.frame_count, 1)
+        self.assertEqual(cnt_ca.frame_count, 1)
 
 
 if __name__ == "__main__":

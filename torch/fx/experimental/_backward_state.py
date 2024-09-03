@@ -25,3 +25,17 @@ class BackwardState:
     """
 
     proxy: torch.fx.Proxy
+    # BackwardState object is a singleton shared between all graphs, so that
+    # module forward hooks captured during Dynamo tracing of the forward pass
+    # can be accessed during Dynamo tracing of the compiled autograd graph.
+    # Otherwise, BackwardState object created for each graph will be different,
+    # causing the module forward hooks captured during forward pass to be lost.
+    # (This is particularly important for activation checkpointing where we need to
+    # rerun module forward hooks in backward pass.)
+    singleton = None
+
+    @classmethod
+    def get_singleton(cls):
+        if cls.singleton is None:
+            cls.singleton = BackwardState()
+        return cls.singleton

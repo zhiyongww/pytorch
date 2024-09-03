@@ -308,6 +308,10 @@ class UserFunctionVariable(BaseUserFunctionVariable):
         result = hasattr(self.fn, name)
         return variables.ConstantVariable.create(result)
 
+    # TODO(yf225): can we detect 2nd call into call_function, to avoid needing this call_function_inner?
+    def call_function_inner(self, tx: "InstructionTranslator", args: "List[VariableTracker]", kwargs: "Dict[str, VariableTracker]") -> "VariableTracker":
+        return super().call_function(tx, args, kwargs)
+
     def call_function(
         self,
         tx: "InstructionTranslator",
@@ -318,8 +322,30 @@ class UserFunctionVariable(BaseUserFunctionVariable):
             return invoke_and_store_as_constant(
                 tx, self.fn, self.get_name(), args, kwargs
             )
+        if len(args) > 0 and isinstance(args[0], variables.UnspecializedNNModuleVariable) and not tx.output.current_tracer.within_forward_hook_under_checkpoint:
+            mod_var = args[0]
+            mod = mod_var.value
+            if self.fn in (
+                *torch.nn.modules.module._global_forward_pre_hooks.values(),
+                *mod._forward_pre_hooks.values(),
+            ):
+                assert self.source
+                with torch._dynamo.variables.higher_order_ops.dynamo_within_forward_hook_under_checkpoint(tx):
+                    return variables.ForwardPreHookUnderCheckpoint.create(tx, mod_var, self, source=self.source).call_function(
+                        tx, args, kwargs
+                    )
+            elif self.fn in (
+                *torch.nn.modules.module._global_forward_hooks.values(),
+                *mod._forward_hooks.values(),
+            ):
+                assert self.source
+                with torch._dynamo.variables.higher_order_ops.dynamo_within_forward_hook_under_checkpoint(tx):
+                    return variables.ForwardHookUnderCheckpoint.create(tx, mod_var, self, source=self.source).call_function(
+                        tx, args, kwargs
+                    )
+        ret = self.call_function_inner(tx, args, kwargs)
+        return ret
 
-        return super().call_function(tx, args, kwargs)
 
 
 class UserMethodVariable(UserFunctionVariable):
