@@ -1,6 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates
 # Owner(s): ["oncall: distributed"]
 import copy
+import gc
 
 from model_registry import MLPModule
 
@@ -74,6 +75,7 @@ class StageBackwardTests(TestCase):
         # Forward, then backward of loss with respect to inputs
         out = mod(x)
         loss = loss_fn(out, target)
+
         dinputs, param_groups = stage_backward_input(
             stage_outputs=(loss,),
             output_grads=None,
@@ -91,6 +93,24 @@ class StageBackwardTests(TestCase):
         for name, p in mod.named_parameters():
             # Check that the weight gradients were not updated
             self.assertEqual(p.grad, None)
+
+        # Monitor memory after backward_input
+        after_gc_counts = []
+        for _ in range(5):
+            out = mod(x)
+            loss = loss_fn(out, target)
+            dinputs, param_groups = stage_backward_input(
+                stage_outputs=(loss,),
+                output_grads=None,
+                input_values=[x],
+                weights=mod.parameters(),
+            )
+            gc.collect()
+            after_gc_count = len(gc.get_objects())
+            after_gc_counts.append(after_gc_count)
+
+        # Check that after gc_counts are not increasing
+        self.assertFalse(all(after_gc_counts[i] > after_gc_counts[i+1] for i in range(len(after_gc_counts)-1)))
 
     def test_stage_backward_weight(self):
         # MLP as a stage module
@@ -117,7 +137,7 @@ class StageBackwardTests(TestCase):
         )
 
         # backward of loss with respect to weights
-        dweights = stage_backward_weight(mod.parameters(), param_groups)
+        stage_backward_weight(mod.parameters(), param_groups, retain_graph=True)
 
         # Run reference
         ref_out = ref_mod(ref_x)
@@ -125,13 +145,24 @@ class StageBackwardTests(TestCase):
         ref_loss.backward()
 
         # Every rank checks gradients
-        for name, p in mod.named_parameters():
+        for i, (name, p) in enumerate(mod.named_parameters()):
             ref_p = ref_mod.get_parameter(name)
             try:
                 torch.testing.assert_close(p.grad, ref_p.grad)
             except AssertionError:
                 print(f"Gradient test failed for {name}: {p.grad} vs {ref_p.grad}")
                 raise
+
+        # Monitor memory after backward_weight
+        for _ in range(5):
+            gc.collect()
+            before_gc_count = len(gc.get_objects())
+            out = mod(x)
+            loss = loss_fn(out, target)
+            stage_backward_weight(mod.parameters(), param_groups, retain_graph=True)
+            gc.collect()
+            after_gc_count = len(gc.get_objects())
+            self.assertLessEqual(after_gc_count, before_gc_count)
 
     def test_stage_backward_weight_multiple_iters(self):
         # MLP as a stage module
