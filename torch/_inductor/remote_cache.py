@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import sys
 import typing
 from abc import abstractmethod
 from typing import Any, Callable, Dict, Generic, List, Optional, Type, TypeVar, Union
@@ -14,6 +16,9 @@ try:
     import redis
 except ImportError:
     redis = None  # type: ignore[assignment]
+
+
+log = logging.getLogger(__name__)
 
 
 if config.is_fbcode():
@@ -108,12 +113,20 @@ class RemoteCache(Generic[_T]):
         return self.serde.encode(value)
 
     def _get(self, key: str, sample: Optional[Sample]) -> Optional[_T]:
-        if data := self.backend.get(key):
+        if data := self._backend_get(key):
             return self._decode(data, sample)
         return None
 
+    # Returns _U - but we aren't actually generic on _U
+    def _backend_get(self, key: str) -> Any:
+        return self.backend.get(key)
+
     def _put(self, key: str, value: _T, sample: Optional[Sample]) -> None:
         data = self._encode(value, sample)
+        self._backend_put(key, data)
+
+    # Takes data: _U - but we aren't actually generic on _U
+    def _backend_put(self, key: str, data: Any) -> None:
         self.backend.put(key, data)
 
     def _create_sample(self) -> Optional[Sample]:
@@ -194,5 +207,37 @@ class RemoteAutotuneCache(RedisRemoteCache):
     pass
 
 
+class RemoteBundledAutotuneCache(RedisRemoteCache):
+    pass
+
+
 class RemoteFxGraphCache(RedisRemoteCache):
     pass
+
+
+def create_cache(
+    key: str,
+    is_fbcode: bool,
+    fb_cache_cls: str,
+    oss_cache_cls: str,
+) -> Optional[RemoteCache[JsonDataTy]]:
+    try:
+        if is_fbcode:
+            import torch._inductor.fb.remote_cache
+
+            cache_cls = getattr(torch._inductor.fb.remote_cache, fb_cache_cls)
+            return cache_cls(key)
+        else:
+            this_module = sys.modules[__name__]
+
+            cache_cls = getattr(this_module, oss_cache_cls)
+            return cache_cls(key)
+
+    except ModuleNotFoundError as e:
+        # No need for a stack trace on this error
+        log.warning("Unable to create a remote cache: %s", e)
+        return None
+
+    except Exception:
+        log.warning("Unable to create a remote cache", exc_info=True)
+        return None

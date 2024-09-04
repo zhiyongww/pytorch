@@ -62,6 +62,8 @@ from torch._inductor.codegen.rocm.compile_command import (
 )
 from torch._utils_internal import log_cache_bypass
 
+from .remote_cache import create_cache
+from .runtime.autotune_cache import AutotuneCacheBundler
 from .utils import _align
 
 
@@ -1304,22 +1306,12 @@ class FxGraphCache:
             remote_cache: Optional[RemoteCache[JsonDataTy]] = None
             if remote:
                 cache_id = "fx-graph-v1"
-                try:
-                    if config.is_fbcode():
-                        from torch._inductor.fb.remote_cache import FbRemoteFxGraphCache
-
-                        remote_cache = FbRemoteFxGraphCache(cache_id)
-                    else:
-                        from torch._inductor.remote_cache import RemoteFxGraphCache
-
-                        remote_cache = RemoteFxGraphCache(cache_id)
-                except ModuleNotFoundError as e:
-                    # No need for a stack trace on this error
-                    remote_cache = None
-                    log.warning("Unable to create a remote cache: %s", e)
-                except Exception:
-                    remote_cache = None
-                    log.warning("Unable to create a remote cache", exc_info=True)
+                remote_cache = create_cache(
+                    cache_id,
+                    config.is_fbcode(),
+                    "FbRemoteFxGraphCache",
+                    "RemoteFxGraphCache",
+                )
 
             compiled_graph = FxGraphCache._lookup_graph(
                 key, example_inputs, local, remote_cache
@@ -1475,7 +1467,10 @@ class CompiledFxGraph:
 
     def __call__(self, inputs: List[Any]) -> Any:
         assert self.current_callable is not None
-        return self.current_callable(inputs)
+        try:
+            return self.current_callable(inputs)
+        finally:
+            AutotuneCacheBundler.end_compile()
 
 
 def run_command_and_check(cmd_: str) -> None:
