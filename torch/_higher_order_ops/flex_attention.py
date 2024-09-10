@@ -519,16 +519,13 @@ class FlexAttentionAutogradOp(torch.autograd.Function):
         block_mask,
         scale,
         kernel_options,
-        score_mod_other_buffers,
         mask_mod_other_buffers,
+        *score_mod_other_buffers, # This is on purpose so it can be flattened
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         any_buffer_requires_grad = any(
             buffer.requires_grad
             for buffer in score_mod_other_buffers + mask_mod_other_buffers
         )
-        assert (
-            not any_buffer_requires_grad
-        ), "Captured buffers that require grad are not yet supported."
         ctx._fw_graph = fw_graph
         ctx._joint_graph = joint_graph
         ctx._mask_graph = block_mask[-1]
@@ -596,8 +593,8 @@ class FlexAttentionAutogradOp(torch.autograd.Function):
             other_buffers[ctx._score_mod_other_buffers_len :]
         )
         # We have asserted that other_buffers do not require grad in the forward
-        none_grads = [None] * 7
-        grad_query, grad_key, grad_value = flex_attention_backward(
+        none_grads = [None] * 6
+        grad_query, grad_key, grad_value, grad_score_mod_captured = flex_attention_backward(
             query,
             key,
             value,
@@ -625,7 +622,7 @@ class FlexAttentionAutogradOp(torch.autograd.Function):
             score_mod_other_buffers,
             mask_mod_other_buffers,
         )
-        return grad_query, grad_key, grad_value, *none_grads
+        return grad_query, grad_key, grad_value, *none_grads, *grad_score_mod_captured
 
 
 @flex_attention.py_impl(DispatchKey.Autograd)
@@ -660,8 +657,8 @@ def flex_attention_autograd(
             block_mask,
             scale,
             kernel_options,
-            score_mod_other_buffers,
             mask_mod_other_buffers,
+            *score_mod_other_buffers,
         )
     return out, logsumexp
 
@@ -955,7 +952,7 @@ def flex_attention_backward_functionalize(
         functional_fw_graph = ctx.functionalize(fw_graph)
         functional_joint_graph = ctx.functionalize(joint_graph)
 
-        grad_query, grad_key, grad_value = flex_attention_backward(
+        grad_query, grad_key, grad_value, grad_score_mod_captured = flex_attention_backward(
             query_unwrapped,
             key_unwrapped,
             value_unwrapped,
@@ -972,7 +969,7 @@ def flex_attention_backward_functionalize(
             mask_mod_other_buffers_unwrapped,
         )
 
-    return ctx.wrap_tensors((grad_query, grad_key, grad_value))  # type: ignore[return-value,arg-type]
+    return ctx.wrap_tensors((grad_query, grad_key, grad_value, grad_score_mod_captured))  # type: ignore[return-value,arg-type]
 
 
 @flex_attention_backward.py_impl(FakeTensorMode)
@@ -997,7 +994,7 @@ def flex_attention_backward_fake_tensor_mode(
         grad_query = torch.empty_like(query)
         grad_key = torch.empty_like(key)
         grad_value = torch.empty_like(value)
-        return grad_query, grad_key, grad_value
+        return grad_query, grad_key, grad_value, [torch.empty_like(i) for i in score_mod_other_buffers]
 
 
 flex_attention_backward.py_impl(DispatchKey.Autograd)(
