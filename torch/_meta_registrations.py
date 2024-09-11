@@ -6510,6 +6510,38 @@ def meta__padded_dense_to_jagged_forward(
     return padded.new_empty(output_shape)
 
 
+@register_meta(aten.split_with_sizes)
+def meta_split_with_sizes(
+    self: Tensor, split_sizes: List[int], dim: int = 0
+) -> List[Tensor]:
+    # This method has a decomposition, so this function is not necessary
+    # but running the decomposition which calls narrow is slow because of all
+    # the unnecessary checks
+    for split_size in split_sizes:
+        torch._check_is_size(
+            split_size,
+            lambda: "split_with_sizes expects split_sizes have only non-negative entries",
+        )
+    torch._check_with(
+        ValueError,
+        sum(split_sizes) == self.shape[dim],
+        lambda: f"Split sizes add up to {sum(split_sizes)} but got the tensor's size of {self.shape[dim]}",
+    )
+    result = []
+    start_idx = 0
+    for split_size in split_sizes:
+        new_shape = list(self.shape)
+        new_shape[dim] = split_size
+        # We mimic narrow which calls _slice_in_dim_meta which in turn calls _slice_meta
+        # By doing that we avoid a lot of checks in slice_in_dim and slice
+        offset = self.stride()[dim] * start_idx
+        result.append(
+            self.as_strided(new_shape, self.stride(), self.storage_offset() + offset)
+        )
+        start_idx += split_size
+    return result
+
+
 def _create_unary_float_meta_func(func):
     @register_meta(func)
     @out_wrapper()
