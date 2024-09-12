@@ -434,9 +434,8 @@ val.shape: {[node.meta['val'].shape for node in aliased_graph_inputs]},
                 "raise_comms",
                 "reorder_compute_for_overlap",
             ],
-            # TODO(yf225): make this check work for activation_checkpoint=True case
             post_grad_custom_pre_pass=self._assert_no_aliased_graph_inputs
-            if fullgraph and not activation_checkpoint
+            if fullgraph
             else None,
         ):
             losses_compiled = test_compiled()
