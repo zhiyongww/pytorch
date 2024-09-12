@@ -359,7 +359,12 @@ val.shape: {[node.meta['val'].shape for node in aliased_graph_inputs]},
         return file_check
 
     def _test_traceable_fsdp(
-        self, model_init_fn, input_creation_fn, backend, fullgraph
+        self,
+        model_init_fn,
+        input_creation_fn,
+        backend,
+        fullgraph,
+        activation_checkpoint=False,
     ):
         def compiler_fn(compiled_autograd_backend):
             def _fn(gm):
@@ -421,7 +426,7 @@ val.shape: {[node.meta['val'].shape for node in aliased_graph_inputs]},
             inline_inbuilt_nn_modules=True,
             skip_fsdp_hooks=False,
         ), torch._functorch.config.patch(
-            recompute_views=True, cse=False
+            recompute_views=True, cse=False, must_save_ac_output=True
         ), torch._inductor.config.patch(
             reorder_for_compute_comm_overlap=True,
             reorder_for_compute_comm_overlap_passes=[
@@ -429,8 +434,9 @@ val.shape: {[node.meta['val'].shape for node in aliased_graph_inputs]},
                 "raise_comms",
                 "reorder_compute_for_overlap",
             ],
+            # TODO(yf225): make this check work for activation_checkpoint=True case
             post_grad_custom_pre_pass=self._assert_no_aliased_graph_inputs
-            if fullgraph
+            if fullgraph and not activation_checkpoint
             else None,
         ):
             losses_compiled = test_compiled()
@@ -677,7 +683,9 @@ val.shape: {[node.meta['val'].shape for node in aliased_graph_inputs]},
                     "Expected at least 3 separate lowerings to Triton code, which means at least 1 graph break in FWD graph",
                 )
 
-    def _create_transformer_factory_fns(self, all_requires_grad):
+    def _create_transformer_factory_fns(
+        self, all_requires_grad, *, activation_checkpoint=False
+    ):
         seq_len = 16
         vocab_size = 8
         n_layers = 3
@@ -689,6 +697,7 @@ val.shape: {[node.meta['val'].shape for node in aliased_graph_inputs]},
             model_args = ModelArgs(
                 vocab_size=vocab_size,
                 n_layers=n_layers,
+                checkpoint_activations=activation_checkpoint,
             )
             model = Transformer(model_args)
             if not all_requires_grad:
@@ -775,9 +784,11 @@ val.shape: {[node.meta['val'].shape for node in aliased_graph_inputs]},
     @torch._inductor.config.patch(fallback_random=True)
     def test_transformer_backend_inductor(self):
         # TODO: enable fullgraph=False case
-        for fullgraph, all_requires_grad in itertools.product([True], [True, False]):
+        for fullgraph, all_requires_grad, activation_checkpoint in itertools.product(
+            [True], [True, False], [True, False]
+        ):
             log.warning(
-                f"fullgraph={fullgraph}, all_requires_grad={all_requires_grad}"  # noqa: G004, G001
+                f"fullgraph={fullgraph}, all_requires_grad={all_requires_grad}, activation_checkpoint={activation_checkpoint}"  # noqa: G004, G001
             )
             with self._maybe_add_graph_break_to_sdpa(
                 fullgraph
@@ -802,10 +813,12 @@ val.shape: {[node.meta['val'].shape for node in aliased_graph_inputs]},
                 _, triton_codes = run_and_get_code(
                     lambda: self._test_traceable_fsdp(
                         *self._create_transformer_factory_fns(
-                            all_requires_grad=all_requires_grad
+                            all_requires_grad=all_requires_grad,
+                            activation_checkpoint=activation_checkpoint,
                         ),
                         "inductor",
                         fullgraph=fullgraph,
+                        activation_checkpoint=activation_checkpoint,
                     )
                 )
             if fullgraph:
