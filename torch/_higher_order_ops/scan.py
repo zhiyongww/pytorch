@@ -187,7 +187,7 @@ def scan(
 
 class ScanOp(HigherOrderOperator):
     def __init__(self):
-        super().__init__("scan")
+        super().__init__("scan", cacheable=True)
 
     def __call__(self, combine_fn, init, xs, dim, reverse):
         return super().__call__(combine_fn, init, xs, dim, reverse)

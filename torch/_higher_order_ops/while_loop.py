@@ -20,7 +20,7 @@ from torch.fx.experimental.proxy_tensor import ProxyTorchDispatchMode, track_ten
 
 class WhileLoopOp(HigherOrderOperator):
     def __init__(self) -> None:
-        super().__init__("while_loop")
+        super().__init__("while_loop", cacheable=True)
 
     def __call__(
         self,

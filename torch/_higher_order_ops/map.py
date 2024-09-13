@@ -34,7 +34,7 @@ from .utils import (
 # remove the wrapper call when it's ready.
 class MapWrapper(HigherOrderOperator):
     def __init__(self):
-        super().__init__("map")
+        super().__init__("map", cacheable=True)
 
     def __call__(self, xs, *args):
         return map_wrapper(xs, *args)
@@ -42,7 +42,7 @@ class MapWrapper(HigherOrderOperator):
 
 class MapImpl(HigherOrderOperator):
     def __init__(self):
-        super().__init__("map_impl")
+        super().__init__("map_impl", cacheable=True)
 
     def __call__(self, *args, **kwargs):
         return super().__call__(*args, **kwargs)
