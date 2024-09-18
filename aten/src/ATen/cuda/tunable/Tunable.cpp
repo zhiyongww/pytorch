@@ -478,8 +478,7 @@ std::ofstream& TuningContext::GetUntunedFile(){
     std::size_t found = filename.rfind(".");
     if (found != std::string::npos) {
       filename.insert(found, device);
-    }
-    else {
+    } else {
       // all else fails, just append
       filename.append(device);
     }
