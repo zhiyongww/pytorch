@@ -26,6 +26,7 @@ from torch.fx.experimental._backward_state import BackwardState
 from torch.fx.experimental.proxy_tensor import is_sym_node
 from torch.fx.experimental.symbolic_shapes import fx_placeholder_vals
 from torch.multiprocessing.reductions import StorageWeakRef
+from torchgen.utils import dataclass_repr
 
 from .. import config
 from .autograd_cache import (
@@ -542,6 +543,25 @@ def aot_dispatch_autograd(
                     colored=True,
                 ),
             )
+
+            trace_structured(
+                "artifact",
+                metadata_fn=lambda: {
+                    "name": "aot_forward_graph_fw_metadata",
+                    "encoding": "string",
+                },
+                payload_fn=lambda: dataclass_repr(fw_metadata),
+            )
+            if maybe_subclass_meta is not None:
+                trace_structured(
+                    "artifact",
+                    metadata_fn=lambda: {
+                        "name": "aot_forward_graph_fw_subclass_metadata",
+                        "encoding": "string",
+                    },
+                    payload_fn=lambda: dataclass_repr(maybe_subclass_meta),
+                )
+
             trace_structured(
                 "aot_forward_graph",
                 payload_fn=lambda: fw_module.print_readable(
