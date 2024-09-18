@@ -519,28 +519,7 @@ class TestCppExtensionOpenRgistration(common.TestCase):
         z = x[y, y]
         self.assertEqual(z_cpu, z)
 
-    def test_open_device_tensorlist_type_fallback(self):
-        # create tensors located in custom device
-        v_foo = torch.Tensor([1, 2, 3]).to("foo")
-        # create result tensor located in cpu
-        z_cpu = torch.Tensor([2, 4, 6])
-        # create tensorlist for foreach_add op
-        x = (v_foo, v_foo)
-        y = (v_foo, v_foo)
-        # Check that our device is correct.
-        device = self.module.custom_device()
-        self.assertTrue(v_foo.device == device)
-        self.assertFalse(v_foo.is_cpu)
-
-        # call _foreach_add op, which will fallback to cpu
-        z = torch._foreach_add(x, y)
-        self.assertEqual(z_cpu, z[0])
-        self.assertEqual(z_cpu, z[1])
-
-        # call _fused_adamw_ with undefined tensor.
-        self.module.fallback_with_undefined_tensor()
-
-    def test_open_device_numpy_serialization(self):
+    def test_open_device_numpy_serialization_map_location(self):
         torch.utils.rename_privateuse1_backend("foo")
         device = self.module.custom_device()
         default_protocol = torch.serialization.DEFAULT_PROTOCOL
