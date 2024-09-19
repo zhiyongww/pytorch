@@ -6236,7 +6236,11 @@ def scan_slice_view(dst, dim, idx):
 @register_lowering(scan_op)
 def scan(combine_subgraph, init, xs, dim, reverse, additional_inputs):
     from torch._dynamo.source import GlobalSource
-    from torch._higher_order_ops.scan import _extract_carry_and_out, stack_y
+    from torch._higher_order_ops.scan import (
+        _extract_carry_and_out,
+        extract_scan_args,
+        stack_y,
+    )
     from torch.fx.experimental.symbolic_shapes import DimDynamic
 
     # Create a clone of init that act as the first carry to subgraph
@@ -6245,9 +6249,6 @@ def scan(combine_subgraph, init, xs, dim, reverse, additional_inputs):
     num_init_leaves = len(init)
     num_xs = len(xs)
     specialized_dim = int(dim)
-
-    def extract_scan_args(combine_subgraph, init, xs, dim, reverse, additional_inputs):
-        return combine_subgraph, init, xs, dim, reverse, additional_inputs
 
     assert combine_subgraph.graph is None
     _, fx_init, fx_xs, _, _, fx_additional_inputs = extract_scan_args(
