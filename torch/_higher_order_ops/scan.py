@@ -48,6 +48,14 @@ def _extract_carry_and_out(flat_out: List[Any], num_carry: int):
     return flat_out[:num_carry], flat_out[num_carry:]
 
 
+# An empty function that's used for inductor lowering in lowering.py
+# Compared with aten.select, the lowring rule is more specialized
+# to the scan operator. For example, we skips a bunch of checks that we're
+# ceratin to be true for scan.
+def scan_slice_view(dst, dim, idx):
+    pass
+
+
 def scan(
     combine_fn: Callable[
         [pytree.PyTree, pytree.PyTree], Tuple[pytree.PyTree, pytree.PyTree]
