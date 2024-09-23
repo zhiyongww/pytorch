@@ -19,7 +19,7 @@ from torch.testing._internal.common_cuda import (
 )
 from torch.testing._internal.common_device_type import (
     disablecuDNN,
-    disableMkldnn,
+    disableOnednn,
     dtypes,
     dtypesIfCUDA,
     instantiate_device_type_tests,
@@ -28,7 +28,7 @@ from torch.testing._internal.common_device_type import (
     onlyCUDA,
     onlyNativeDeviceTypes,
     precisionOverride,
-    skipCPUIfNoMkldnn,
+    skipCPUIfNoOnednn,
     skipCUDAIfCudnnVersionLessThan,
     skipCUDAIfMiopen,
     skipCUDAIfNoCudnn,
@@ -2128,7 +2128,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Slow2d,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN],
+                decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN],
                 name="slow1d",
             ),
             subtest(
@@ -2140,7 +2140,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.SlowTranspose2d,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN],
+                decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN],
                 name="slow1d_transposed",
             ),
             subtest(
@@ -2152,7 +2152,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.SlowDilated2d,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN],
+                decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN],
                 name="slow1d_dilated",
             ),
             subtest(
@@ -2164,7 +2164,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.SlowTranspose2d,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN],
+                decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN],
                 name="slow1d_dilated_transposed",
             ),
             subtest(
@@ -2176,7 +2176,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Slow2d,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN],
+                decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN],
                 name="slow2d",
             ),
             subtest(
@@ -2188,7 +2188,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.SlowTranspose2d,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN],
+                decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN],
                 name="slow2d_transposed",
             ),
             subtest(
@@ -2200,7 +2200,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.SlowDilated2d,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN],
+                decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN],
                 name="slow2d_dilated",
             ),
             subtest(
@@ -2212,7 +2212,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.SlowTranspose2d,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN],
+                decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN],
                 name="slow2d_dilated_transposed",
             ),
             subtest(
@@ -2224,7 +2224,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Slow3d,
                 ),
-                decorators=[onlyCPU, disableMkldnn],
+                decorators=[onlyCPU, disableOnednn],
                 name="slow3d_cpu",
             ),
             # CUDA doesn't have a slow 3D implementation, so it goes to the dilated 3D implementation instead
@@ -2242,7 +2242,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
             ),
             # FIXME: RuntimeError: CUDA out of memory.
             # subtest(((2, 6, 7, 8, 9), True, False, 3, torch.strided, torch._C._ConvBackend.SlowTranspose3d),
-            #         decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN], name='slow3d_transposed'),
+            #         decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN], name='slow3d_transposed'),
             subtest(
                 (
                     (2, 6, 7, 8, 9),
@@ -2252,12 +2252,12 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.SlowDilated3d,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN],
+                decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN],
                 name="slow3d_dilated",
             ),
             # FIXME: RuntimeError: CUDA out of memory.
             # subtest(((2, 6, 7, 8, 9), True, True, 3, torch.strided, torch._C._ConvBackend.SlowTranspose3d),
-            #         decorators=[onlyNativeDeviceTypes, disableMkldnn, disablecuDNN], name='slow3d_dilated_transposed'),
+            #         decorators=[onlyNativeDeviceTypes, disableOnednn, disablecuDNN], name='slow3d_dilated_transposed'),
             subtest(
                 (
                     (0, 6, 7),
@@ -2267,7 +2267,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Empty,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn],
+                decorators=[onlyNativeDeviceTypes, disableOnednn],
                 name="empty_batch1d",
             ),
             subtest(
@@ -2279,7 +2279,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Empty,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn],
+                decorators=[onlyNativeDeviceTypes, disableOnednn],
                 name="empty_channel1d",
             ),
             subtest(
@@ -2291,7 +2291,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Empty,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn],
+                decorators=[onlyNativeDeviceTypes, disableOnednn],
                 name="empty_batch_channel1d",
             ),
             subtest(
@@ -2303,7 +2303,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Empty,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn],
+                decorators=[onlyNativeDeviceTypes, disableOnednn],
                 name="empty_batch2d",
             ),
             subtest(
@@ -2315,7 +2315,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Empty,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn],
+                decorators=[onlyNativeDeviceTypes, disableOnednn],
                 name="empty_channel2d",
             ),
             subtest(
@@ -2327,7 +2327,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Empty,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn],
+                decorators=[onlyNativeDeviceTypes, disableOnednn],
                 name="empty_batch_channel2d",
             ),
             subtest(
@@ -2339,7 +2339,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Empty,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn],
+                decorators=[onlyNativeDeviceTypes, disableOnednn],
                 name="empty_batch3d",
             ),
             subtest(
@@ -2351,7 +2351,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Empty,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn],
+                decorators=[onlyNativeDeviceTypes, disableOnednn],
                 name="empty_channel3d",
             ),
             subtest(
@@ -2363,7 +2363,7 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     torch.strided,
                     torch._C._ConvBackend.Empty,
                 ),
-                decorators=[onlyNativeDeviceTypes, disableMkldnn],
+                decorators=[onlyNativeDeviceTypes, disableOnednn],
                 name="empty_batch_channel3d",
             ),
             # === cuda ===
@@ -2585,9 +2585,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.Mkldnn,
+                    torch._C._ConvBackend.Onednn,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn1d",
             ),
             subtest(
@@ -2597,9 +2597,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.Mkldnn,
+                    torch._C._ConvBackend.Onednn,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn2d",
             ),
             subtest(
@@ -2609,9 +2609,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.Mkldnn,
+                    torch._C._ConvBackend.Onednn,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn3d",
             ),
             # Transposed convolution is broken for mkldnn. See https://github.com/pytorch/pytorch/issues/68775.
@@ -2622,9 +2622,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.Mkldnn,
+                    torch._C._ConvBackend.Onednn,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn, unittest.expectedFailure],
+                decorators=[onlyCPU, skipCPUIfNoOnednn, unittest.expectedFailure],
                 name="mkldnn1d_transposed",
             ),
             subtest(
@@ -2634,9 +2634,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.Mkldnn,
+                    torch._C._ConvBackend.Onednn,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn, unittest.expectedFailure],
+                decorators=[onlyCPU, skipCPUIfNoOnednn, unittest.expectedFailure],
                 name="mkldnn2d_transposed",
             ),
             subtest(
@@ -2646,9 +2646,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.Mkldnn,
+                    torch._C._ConvBackend.Onednn,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn, unittest.expectedFailure],
+                decorators=[onlyCPU, skipCPUIfNoOnednn, unittest.expectedFailure],
                 name="mkldnn3d_transposed",
             ),
             subtest(
@@ -2658,9 +2658,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     True,
                     3,
                     torch.strided,
-                    torch._C._ConvBackend.Mkldnn,
+                    torch._C._ConvBackend.Onednn,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn1d_cpu_input",
             ),
             subtest(
@@ -2670,9 +2670,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     True,
                     3,
                     torch.strided,
-                    torch._C._ConvBackend.Mkldnn,
+                    torch._C._ConvBackend.Onednn,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn2d_cpu_input",
             ),
             subtest(
@@ -2682,9 +2682,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     True,
                     3,
                     torch.strided,
-                    torch._C._ConvBackend.Mkldnn,
+                    torch._C._ConvBackend.Onednn,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn3d_cpu_input",
             ),
             subtest(
@@ -2694,9 +2694,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.MkldnnEmpty,
+                    torch._C._ConvBackend.OnednnEmpty,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn_empty_batch1d",
             ),
             subtest(
@@ -2706,9 +2706,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.MkldnnEmpty,
+                    torch._C._ConvBackend.OnednnEmpty,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn_empty_channel1d",
             ),
             subtest(
@@ -2718,9 +2718,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.MkldnnEmpty,
+                    torch._C._ConvBackend.OnednnEmpty,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn_empty_batch_channel1d",
             ),
             subtest(
@@ -2730,9 +2730,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.MkldnnEmpty,
+                    torch._C._ConvBackend.OnednnEmpty,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn_empty_batch2d",
             ),
             subtest(
@@ -2742,9 +2742,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.MkldnnEmpty,
+                    torch._C._ConvBackend.OnednnEmpty,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn_empty_channel2d",
             ),
             subtest(
@@ -2754,9 +2754,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.MkldnnEmpty,
+                    torch._C._ConvBackend.OnednnEmpty,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn_empty_batch_channel2d",
             ),
             subtest(
@@ -2766,9 +2766,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.MkldnnEmpty,
+                    torch._C._ConvBackend.OnednnEmpty,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn_empty_batch3d",
             ),
             subtest(
@@ -2778,9 +2778,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.MkldnnEmpty,
+                    torch._C._ConvBackend.OnednnEmpty,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn_empty_channel3d",
             ),
             subtest(
@@ -2790,9 +2790,9 @@ class TestConvolutionNNDeviceType(NNTestCase):
                     False,
                     3,
                     torch._mkldnn,
-                    torch._C._ConvBackend.MkldnnEmpty,
+                    torch._C._ConvBackend.OnednnEmpty,
                 ),
-                decorators=[onlyCPU, skipCPUIfNoMkldnn],
+                decorators=[onlyCPU, skipCPUIfNoOnednn],
                 name="mkldnn_empty_batch_channel3d",
             ),
             # Note: Tests for mobile backends are not currently supported. This comprises
