@@ -434,6 +434,107 @@ main()
 
         self.assertEqual(counters["compiled_autograd"]["captures"], 1)
 
+    def test_warmup_runs(self):
+        warmup_runs = 2
+        n_iters = 5
+        inductor_invoke_count_forward = 0
+        inductor_invoke_count_backward = 0
+
+        def increment_inductor_invoke_count(gm):
+            nonlocal inductor_invoke_count_forward, inductor_invoke_count_backward
+            if torch._dynamo.compiled_autograd.in_compiled_autograd_region:
+                inductor_invoke_count_backward += 1
+            else:
+                inductor_invoke_count_forward += 1
+
+        class TestModule(nn.Module):
+            def __init__(self, has_graph_break):
+                super().__init__()
+                self.linear = nn.Linear(4, 4)
+                self.sigmoid = nn.Sigmoid()
+                self.has_graph_break = has_graph_break
+
+            def forward(self, x):
+                x = self.linear(x)
+                if self.has_graph_break:
+                    torch._dynamo.graph_break()
+                x = self.sigmoid(x)
+                return x
+
+        def iter_fn(model, x):
+            res = []
+            result = model(x).sum()
+            result.backward()
+            res.append(result)
+            res.append(model.linear.weight)
+            res.append(model.linear.bias)
+            res.append(model.linear.weight.grad)
+            res.append(model.linear.bias.grad)
+            return res
+
+        def run_iters(
+            iter_fn, compiled=False, enable_ca_via_config=False, has_graph_break=False
+        ):
+            nonlocal inductor_invoke_count_forward, inductor_invoke_count_backward
+            torch._dynamo.reset()
+            torch._dynamo.compiled_autograd.reset()
+            torch.manual_seed(123)
+            inductor_invoke_count_forward = 0
+            inductor_invoke_count_backward = 0
+
+            model = TestModule(has_graph_break=has_graph_break)
+            optim = torch.optim.SGD(model.parameters(), lr=1e-4)
+            x = torch.randn([1, 4])
+
+            res = []
+            for i in range(n_iters):
+                torch._dynamo.enable_warmup(i < warmup_runs)
+                if compiled and not enable_ca_via_config:
+                    ctx = compiled_autograd.enable(torch.compile)
+                else:
+                    ctx = contextlib.nullcontext()
+                with ctx:
+                    res += iter_fn(model, x)
+                optim.step()
+                optim.zero_grad(set_to_none=True)
+                if compiled:
+                    if i < warmup_runs:
+                        self.assertEqual(inductor_invoke_count_forward, 0)
+                        self.assertEqual(inductor_invoke_count_backward, 0)
+                    else:
+                        self.assertEqual(
+                            inductor_invoke_count_forward,
+                            1 if not has_graph_break else 3,
+                        )
+                        self.assertEqual(inductor_invoke_count_backward, 1)
+            return res
+
+        def run_test(enable_ca_via_config, has_graph_break):
+            expected = run_iters(iter_fn, compiled=False)
+            counters["compiled_autograd"]["captures"] = 0
+            with config.patch(
+                compiled_autograd=enable_ca_via_config,
+            ), torch._inductor.config.patch(
+                post_grad_custom_pre_pass=increment_inductor_invoke_count
+            ):
+                compiled_fn = torch.compile(iter_fn)
+                actual = run_iters(
+                    compiled_fn,
+                    compiled=True,
+                    enable_ca_via_config=enable_ca_via_config,
+                    has_graph_break=has_graph_break,
+                )
+            self.assertEqual(expected, actual)
+            self.assertEqual(counters["compiled_autograd"]["captures"], 1)
+
+        for enable_ca_via_config, has_graph_break in itertools.product(
+            [True, False], [True, False]
+        ):
+            run_test(
+                enable_ca_via_config=enable_ca_via_config,
+                has_graph_break=has_graph_break,
+            )
+
     def test_dynamo_boxed(self):
         def get_placeholders(gm_):
             placeholders = []

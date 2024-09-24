@@ -2965,6 +2965,22 @@ def maybe_enable_compiled_autograd(should_enable, fullgraph=True, dynamic=True):
             yield ctx
 
 
+_in_warmup_mode_tls = threading.local()
+
+
+# Checks whether we are in Dynamo warmup mode (which runs all compiled functions in eager).
+def in_warmup_mode():
+    return getattr(_in_warmup_mode_tls, "value", False)
+
+
+# Controls whether to enable Dynamo warmup mode.
+# If `enabled=True`, all torch.compile'd functions will be run in eager mode.
+# If `enabled=False`, all torch.compile'd functions will be back to its normal (compiled) behavior.
+def enable_warmup(enabled=True):
+    global _in_warmup_mode_tls
+    _in_warmup_mode_tls.value = enabled
+
+
 def invalid_removeable_handle():
     # need a subclass so weakref works
     class Invalid(dict):  # type: ignore[type-arg]
