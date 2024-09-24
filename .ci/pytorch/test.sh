@@ -454,6 +454,7 @@ test_perf_for_dashboard() {
       device=cpu_x86
     elif [[ "${TEST_CONFIG}" == *cpu_aarch64* ]]; then
       device=cpu_aarch64
+      test_inductor_set_freezing
     fi
     test_inductor_set_cpu_affinity
   elif [[ "${TEST_CONFIG}" == *cuda_a10g* ]]; then
@@ -713,9 +714,17 @@ test_inductor_set_cpu_affinity(){
     export KMP_BLOCKTIME=1
   fi
   cores=$(test_inductor_get_core_number)
+  # Set number of cores to 16 on Aarch64 for performance runs.
+  if [[ "${TEST_CONFIG}" == *aarch64* && $cores -gt 16 ]]; then
+    cores=16
+  fi
   export OMP_NUM_THREADS=$cores
   end_core=$((cores-1))
   export TASKSET="taskset -c 0-$end_core"
+}
+
+test_inductor_set_freezing(){
+  export TORCHINDUCTOR_FREEZING=1
 }
 
 test_inductor_torchbench_cpu_smoketest_perf(){
