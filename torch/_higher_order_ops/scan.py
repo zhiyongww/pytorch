@@ -129,9 +129,9 @@ def scan(
                     backend = make_eager_backend_with_torch_function_mode(metadata_mode)
                 else:
                     backend = "eager"
-                return torch.compile(_scan_op_wrapper, backend=backend, fullgraph=True)(
-                    combine_fn, init, xs, dim=dim, reverse=reverse
-                )
+                return torch._dynamo.enable(
+                    torch.compile(_scan_op_wrapper, backend=backend, fullgraph=True)
+                )(combine_fn, init, xs, dim=dim, reverse=reverse)
 
     leaves_init, spec_init = pytree.tree_flatten(init)
     leaves_xs, spec_xs = pytree.tree_flatten(xs)

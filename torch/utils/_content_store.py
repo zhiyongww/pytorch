@@ -47,13 +47,16 @@ from torch.multiprocessing.reductions import StorageWeakRef
 def lazy_compile(**compile_kwargs):
     """Lazily wrap a function with torch.compile on the first call
 
+    NOTE: the torch.compile is forced - compilation will be enabled
+    even if the function is in a torch.compiler.disabled region.
+
     This avoids eagerly importing dynamo.
     """
 
     def decorate_fn(fn):
         @functools.wraps(fn)
         def compile_hook(*args, **kwargs):
-            compiled_fn = torch.compile(fn, **compile_kwargs)
+            compiled_fn = torch.compiler.enable(torch.compile(fn, **compile_kwargs))
             globals()[fn.__name__] = functools.wraps(fn)(compiled_fn)
             return compiled_fn(*args, **kwargs)
 

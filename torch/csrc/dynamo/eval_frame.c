@@ -506,7 +506,7 @@ static PyObject* _custom_eval_frame_shim(
   //  - Python callable(): enables TorchDynamo
   PyObject* callback = eval_frame_callback_get();
 
-  if (callback == Py_None) {
+  if (!eval_frame_callback_enabled_get() || callback == Py_None) {
     return eval_frame_default(tstate, frame, throw_flag);
   }
 
@@ -581,9 +581,9 @@ static PyObject* _custom_eval_frame(
   }
   if (extra == SKIP_CODE_RECURSIVE) {
     DEBUG_TRACE("skip recursive %s", get_frame_name(frame));
-    eval_frame_callback_set(Py_None);
+    eval_frame_callback_enabled_set(false);
     PyObject* result = eval_frame_default(tstate, frame, throw_flag);
-    eval_frame_callback_set(callback);
+    eval_frame_callback_enabled_set(true);
     return result;
   }
 
@@ -678,9 +678,11 @@ static PyObject* _custom_eval_frame(
     // Dynamo returned skip_code_recursive_flag, so we should recursively skip code.
     DEBUG_TRACE("create skip recursive %s", get_frame_name(frame));
     set_extra_state(F_CODE(frame), SKIP_CODE_RECURSIVE);
-    PyObject* r = eval_frame_default(tstate, frame, throw_flag);
     // Re-enable custom behavior
     eval_frame_callback_set(callback);
+    eval_frame_callback_enabled_set(false);
+    PyObject* r = eval_frame_default(tstate, frame, throw_flag);
+    eval_frame_callback_enabled_set(true);
     return r;
   } else if (result != Py_None) {
     DEBUG_TRACE("create cache %s", get_frame_name(frame));
@@ -792,6 +794,24 @@ static PyObject* set_eval_frame_py(PyObject* dummy, PyObject* callback) {
   return set_eval_frame(callback, PyThreadState_GET());
 }
 
+static PyObject* set_eval_frame_callback_enabled(PyObject* dummy, PyObject* enabled) {
+  bool prior = eval_frame_callback_enabled_get();
+  if (enabled == Py_True) {
+    eval_frame_callback_enabled_set(true);
+  } else if (enabled == Py_False) {
+    eval_frame_callback_enabled_set(false);
+  } else {
+    DEBUG_TRACE0("arg error");
+    PyErr_SetString(PyExc_TypeError, "expected bool");
+    return NULL;
+  }
+  return PyBool_FromLong(prior);
+}
+
+static PyObject* is_eval_frame_callback_enabled(PyObject* dummy, PyObject* args) {
+  return PyBool_FromLong(eval_frame_callback_enabled_get());
+}
+
 static PyObject* reset_code(PyObject* dummy, PyObject* code) {
   if (!PyCode_Check(code)) {
     DEBUG_TRACE0("arg error");
@@ -836,6 +856,8 @@ static PyObject* set_guard_error_hook(PyObject* dummy, PyObject* obj) {
 
 static PyMethodDef _methods[] = {
     {"set_eval_frame", set_eval_frame_py, METH_O, NULL},
+    {"set_eval_frame_callback_enabled", set_eval_frame_callback_enabled, METH_O, NULL},
+    {"is_eval_frame_callback_enabled", is_eval_frame_callback_enabled, METH_NOARGS, NULL},
     {"reset_code", reset_code, METH_O, NULL},
     {"unsupported", unsupported, METH_VARARGS, NULL},
     {"skip_code", skip_code, METH_O, NULL},

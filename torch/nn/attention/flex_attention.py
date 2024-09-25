@@ -845,7 +845,9 @@ def create_block_mask(
         Q_LEN = _round_up_to_multiple(Q_LEN, Q_BLOCK_SIZE)
     KV_LEN = _round_up_to_multiple(KV_LEN, KV_BLOCK_SIZE)
     if _compile:
-        inner_func = torch.compile(inner_func, fullgraph=True, dynamic=False)
+        inner_func = torch.compiler.enable(
+            torch.compile(inner_func, fullgraph=True, dynamic=False)
+        )
     with TransformGetItemToIndex():
         partial_block_mask, full_block_mask = inner_func(
             mask_mod, B, H, Q_LEN, KV_LEN, device, KV_BLOCK_SIZE, Q_BLOCK_SIZE
@@ -1052,8 +1054,10 @@ def flex_attention(
                         )
                     else:
                         backend = "eager"
-                    out, lse = torch.compile(
-                        _flex_attention_hop_wrapper, backend=backend, fullgraph=True
+                    out, lse = torch.compiler.enable(
+                        torch.compile(
+                            _flex_attention_hop_wrapper, backend=backend, fullgraph=True
+                        )
                     )(
                         query,
                         key,

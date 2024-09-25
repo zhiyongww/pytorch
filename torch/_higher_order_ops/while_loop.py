@@ -153,8 +153,10 @@ def while_loop(cond_fn, body_fn, carried_inputs):
                     backend = make_eager_backend_with_torch_function_mode(metadata_mode)
                 else:
                     backend = "eager"
-                return torch.compile(
-                    _while_loop_op_wrapper, backend=backend, fullgraph=True
+                return torch._dynamo.enable(
+                    torch.compile(
+                        _while_loop_op_wrapper, backend=backend, fullgraph=True
+                    )
                 )(cond_fn, body_fn, carried_inputs, additional_inputs)
 
 

@@ -2,6 +2,8 @@
 import functools
 import operator
 import os
+import sys
+import unittest
 import unittest.mock as mock
 from unittest.mock import patch
 
@@ -421,6 +423,276 @@ class DecoratorTests(torch._dynamo.test_case.TestCase):
         # first frame is before disable, second frame is after disable
         self.assertEqual(cnt.frame_count, 2)
         self.assertEqual(cnt.op_count, 3)
+
+    def test_disable_outer(self):
+        cnts = torch._dynamo.testing.CompileCounter()
+
+        @torch.compile(backend=cnts, fullgraph=True)
+        def f(x):
+            x = x + 1
+            torch._dynamo.graph_break()
+            return x + 1
+
+        @torch._dynamo.disable
+        def g(x):
+            x = x + 1
+            x = f(x)
+            return x + 1
+
+        self.assertEqual(g(torch.ones(3, 3)), torch.ones(3, 3) + 4)
+        self.assertEqual(cnts.frame_count, 0)
+        self.assertEqual(cnts.op_count, 0)
+
+    def test_enable_decorator(self):
+        @torch._dynamo.enable
+        def a(x):
+            if torch._dynamo.is_compiling():
+                return x + 1
+            return x
+
+        @torch._dynamo.disable
+        def b(x):
+            x = a(x)
+            if torch._dynamo.is_compiling():
+                return x + 2
+            return x
+
+        @torch.compile(backend="eager")
+        def c(x):
+            x = b(x)
+            if torch._dynamo.is_compiling():
+                return x + 4
+            return x
+
+        @torch._dynamo.disable
+        def d(x):
+            x = c(x)
+            if torch._dynamo.is_compiling():
+                return x + 8
+            return x
+
+        self.assertEqual(a(torch.ones(3, 3)), torch.ones(3, 3))
+        self.assertEqual(b(torch.ones(3, 3)), torch.ones(3, 3))
+        self.assertEqual(c(torch.ones(3, 3)), torch.ones(3, 3) + 5)
+        self.assertEqual(d(torch.ones(3, 3)), torch.ones(3, 3) + 1)
+
+    def test_stacked_decorators(self):
+        def f(x):
+            if torch._dynamo.is_compiling():
+                return x + 1
+            return x + 2
+
+        cnts = torch._dynamo.testing.CompileCounter()
+        opt_f1 = torch.compile(torch._dynamo.disable(f), backend=cnts)
+        self.assertEqual(opt_f1(torch.ones(3, 3)), torch.ones(3, 3) + 2)
+        self.assertEqual(cnts.frame_count, 0)
+        self.assertEqual(cnts.op_count, 0)
+
+        cnts = torch._dynamo.testing.CompileCounter()
+        opt_f2 = torch._dynamo.disable(torch.compile(f, backend=cnts))
+        self.assertEqual(opt_f2(torch.ones(3, 3)), torch.ones(3, 3) + 2)
+        self.assertEqual(cnts.frame_count, 0)
+        self.assertEqual(cnts.op_count, 0)
+
+        cnts = torch._dynamo.testing.CompileCounter()
+
+        @torch._dynamo.enable
+        @torch._dynamo.disable
+        @torch.compile(backend=cnts)
+        def f(x):
+            if torch._dynamo.is_compiling():
+                return x + 1
+            return x + 2
+
+        self.assertEqual(f(torch.ones(3, 3)), torch.ones(3, 3) + 2)
+        self.assertEqual(cnts.frame_count, 0)
+        self.assertEqual(cnts.op_count, 0)
+
+        cnts = torch._dynamo.testing.CompileCounter()
+
+        @torch._dynamo.disable
+        @torch._dynamo.enable
+        @torch.compile(backend=cnts)
+        def f(x):
+            if torch._dynamo.is_compiling():
+                return x + 1
+            return x + 2
+
+        self.assertEqual(f(torch.ones(3, 3)), torch.ones(3, 3) + 1)
+        self.assertEqual(cnts.frame_count, 1)
+        self.assertEqual(cnts.op_count, 1)
+
+        cnts = torch._dynamo.testing.CompileCounter()
+
+        @torch._dynamo.enable
+        @torch.compile(backend=cnts)
+        @torch._dynamo.disable
+        def f(x):
+            if torch._dynamo.is_compiling():
+                return x + 1
+            return x + 2
+
+        self.assertEqual(f(torch.ones(3, 3)), torch.ones(3, 3) + 2)
+        self.assertEqual(cnts.frame_count, 0)
+        self.assertEqual(cnts.op_count, 0)
+
+        cnts = torch._dynamo.testing.CompileCounter()
+
+        @torch._dynamo.disable
+        @torch.compile(backend=cnts)
+        @torch._dynamo.enable
+        def f(x):
+            if torch._dynamo.is_compiling():
+                return x + 1
+            return x + 2
+
+        self.assertEqual(f(torch.ones(3, 3)), torch.ones(3, 3) + 1)
+        self.assertEqual(cnts.frame_count, 1)
+        self.assertEqual(cnts.op_count, 1)
+
+    def test_stacked_decorator_nn_module(self):
+        class Mod(torch.nn.Module):
+            def forward(self, x):
+                if torch._dynamo.is_compiling():
+                    return x + 1
+                return x + 2
+
+        mod = torch._dynamo.disable(
+            torch._dynamo.enable(torch.compile(Mod(), backend="eager"))
+        )
+        self.assertEqual(mod(torch.ones(3, 3)), torch.ones(3, 3) + 1)
+
+        mod = torch._dynamo.enable(
+            torch._dynamo.disable(torch.compile(Mod(), backend="eager"))
+        )
+        self.assertEqual(mod(torch.ones(3, 3)), torch.ones(3, 3) + 2)
+
+        mod = torch._dynamo.disable(
+            torch.compile(torch._dynamo.enable(Mod()), backend="eager")
+        )
+        self.assertEqual(mod(torch.ones(3, 3)), torch.ones(3, 3) + 1)
+
+        mod = torch._dynamo.enable(
+            torch.compile(torch._dynamo.disable(Mod()), backend="eager")
+        )
+        self.assertEqual(mod(torch.ones(3, 3)), torch.ones(3, 3) + 2)
+
+    def test_enable_disable_recursive(self):
+        def a(x):
+            if torch._dynamo.is_compiling():
+                return x + 1
+            return x
+
+        @torch._dynamo.enable
+        def b(x):
+            x = a(x)
+            if torch._dynamo.is_compiling():
+                return x + 2
+            return x
+
+        def c(x):
+            x = b(x)
+            if torch._dynamo.is_compiling():
+                return x + 4
+            return x
+
+        @torch._dynamo.disable
+        def d(x):
+            x = c(x)
+            if torch._dynamo.is_compiling():
+                return x + 8
+            return x
+
+        @torch.compile(backend="eager")
+        def e(x):
+            return d(x)
+
+        self.assertEqual(e(torch.ones(3, 3)), torch.ones(3, 3) + 3)
+
+    @torch._dynamo.config.patch(new_compile_disable_behavior=False)
+    def test_old_compile_disable(self):
+        @torch._dynamo.enable
+        def a(x):
+            if torch._dynamo.is_compiling():
+                return x + 1
+            return x
+
+        @torch._dynamo.disable
+        def b(x):
+            x = a(x)
+            if torch._dynamo.is_compiling():
+                return x + 2
+            return x
+
+        @torch.compile(backend="eager")
+        def c(x):
+            x = b(x)
+            if torch._dynamo.is_compiling():
+                return x + 4
+            return x
+
+        @torch._dynamo.disable
+        def d(x):
+            x = c(x)
+            if torch._dynamo.is_compiling():
+                return x + 8
+            return x
+
+        self.assertEqual(a(torch.ones(3, 3)), torch.ones(3, 3))
+        self.assertEqual(b(torch.ones(3, 3)), torch.ones(3, 3))
+        self.assertEqual(c(torch.ones(3, 3)), torch.ones(3, 3) + 4)
+        self.assertEqual(d(torch.ones(3, 3)), torch.ones(3, 3) + 4)
+
+    # NOTE remove test when warning is removed
+    def test_disable_compile_warning(self):
+        import logging
+
+        @torch.compile(backend="eager")
+        def a(x):
+            return x + 1
+
+        @torch._dynamo.disable
+        def b(x):
+            return a(x) + 1
+
+        with self.assertLogs("torch._dynamo.eval_frame", logging.WARNING) as cm:
+            b(torch.ones(3, 3))
+
+        self.assertTrue(
+            any(
+                "`torch.compiler.disable` region detected with traceback" in output
+                for output in cm.output
+            )
+        )
+
+    # NOTE no need to test logging when warning is removed
+    @unittest.skipIf(sys.version_info < (3, 10), "assertNoLogs is 3.10+")
+    def test_no_disable_compile_warning(self):
+        import logging
+
+        @torch._dynamo.enable
+        @torch.compile(backend="eager")
+        def a(x):
+            if torch._dynamo.is_compiling():
+                return x + 1
+            return x + 2
+
+        def b(x):
+            if torch._dynamo.is_compiling():
+                return x + 1
+            return x + 2
+
+        opt_b = torch._dynamo.enable(torch.compile(b, backend="eager"))
+
+        @torch._dynamo.disable()
+        def fn(x):
+            return a(x), opt_b(x)
+
+        with self.assertNoLogs("torch._dynamo.eval_frame", logging.WARNING):
+            result1, result2 = fn(torch.ones(3, 3))
+
+        self.assertEqual(result1, torch.ones(3, 3) + 1)
+        self.assertEqual(result2, torch.ones(3, 3) + 1)
 
     def _test_mark_static_address(self, guarded):
         # This test verifies that dynamo properly marks inputs as static
