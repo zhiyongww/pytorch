@@ -1436,7 +1436,6 @@ class PythonWrapperCodegen(CodeGen):
                         else:
                             symbol_str = f"{symbol!r}"
                         if annotation := global_annotations.get(symbol_name):
-                            annotion_code = ""
                             if isinstance(annotation, type):
                                 annotation_code = (
                                     f": {annotation.__module__}.{annotation.__name__}"
