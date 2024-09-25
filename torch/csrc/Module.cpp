@@ -654,10 +654,12 @@ PyObject* THPModule_setAllowTF32CuDNN(PyObject* _unused, PyObject* arg) {
 }
 
 PyObject* THPModule_allowTF32CuDNN(PyObject* _unused, PyObject* noargs) {
+  HANDLE_TH_ERRORS
   if (at::globalContext().allowTF32CuDNN())
     Py_RETURN_TRUE;
   else
     Py_RETURN_FALSE;
+  END_HANDLE_TH_ERRORS
 }
 
 PyObject* THPModule_setFloat32MatmulPrecision(
@@ -678,6 +680,7 @@ PyObject* THPModule_setFloat32MatmulPrecision(
 PyObject* THPModule_float32MatmulPrecision(
     PyObject* _unused,
     PyObject* noargs) {
+  HANDLE_TH_ERRORS
   std::string s = "highest";
   auto p = at::globalContext().float32MatmulPrecision();
   if (p == at::Float32MatmulPrecision::HIGH) {
@@ -686,6 +689,7 @@ PyObject* THPModule_float32MatmulPrecision(
     s = "medium";
   }
   return THPUtils_packString(s);
+  END_HANDLE_TH_ERRORS
 }
 PyObject* THPModule_setSDPUseFlash(PyObject* _unused, PyObject* arg) {
   HANDLE_TH_ERRORS
@@ -1012,10 +1016,12 @@ PyObject* THPModule_setAllowTF32CuBLAS(PyObject* _unused, PyObject* arg) {
 }
 
 PyObject* THPModule_allowTF32CuBLAS(PyObject* _unused, PyObject* noargs) {
+  HANDLE_TH_ERRORS
   if (at::globalContext().allowTF32CuBLAS()) {
     Py_RETURN_TRUE;
   }
   Py_RETURN_FALSE;
+  END_HANDLE_TH_ERRORS
 }
 
 PyObject* THPModule_setAllowFP16ReductionCuBLAS(
@@ -2092,6 +2098,17 @@ Call this whenever a new thread is created in order to propagate values from
             size_bytes,
             // NOLINTNEXTLINE(performance-no-int-to-ptr)
             at::DataPtr(reinterpret_cast<void*>(data_ptr), device));
+      });
+
+  py_module.def("_get_fp32_precision", [](std::string backend, std::string op) {
+    return at::globalContext().float32Precision(backend, op);
+  });
+
+  py_module.def(
+      "_set_fp32_precision",
+      [](std::string backend, std::string op, std::string precision) {
+        at::globalContext().setFloat32Precision(backend, op, precision);
+        return precision;
       });
 
   py_module.def(
