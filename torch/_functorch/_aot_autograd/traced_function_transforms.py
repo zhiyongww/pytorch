@@ -775,9 +775,26 @@ def aot_dispatch_subclass(
             grad_inputs = wrapped_outs[1]
             subclass_meta.grad_input_metas = create_subclass_meta(grad_inputs)
 
+            # Add extra symints as outputs to the forward/backward graphs
+            # ignore nested ints here
+            forward_outs = unwrap_tensor_subclasses(
+                wrapped_outs[0],
+                is_runtime=False,
+                append_symints=True,
+                subclass_metas=None,
+            )
+            # ignore nested ints here
+            backward_outs = unwrap_tensor_subclasses(
+                wrapped_outs[1],
+                is_runtime=False,
+                append_symints=True,
+                subclass_metas=None,
+            )
+            return (forward_outs, backward_outs)
+
         # Step 3: Unwrap any subclass outputs back into dense tensors
         unwrapped_outs = unwrap_tensor_subclasses(
-            wrapped_outs, is_joint_structure=use_trace_joint
+            wrapped_outs, is_runtime=False, append_symints=True, subclass_metas=None
         )
         return unwrapped_outs
 
@@ -794,9 +811,22 @@ def aot_dispatch_subclass(
     def metadata_fn(*primals):
         return inner_fn(fw_only, primals, use_trace_joint=False)
 
-    args_unwrapped = unwrap_tensor_subclasses(
-        args, is_joint_structure=is_joint_structure
-    )
+    if is_joint_structure:
+        args_unwrapped = (
+            # Add extra symints (size/strides) as input to the forward graph
+            unwrap_tensor_subclasses(
+                args[0], is_runtime=False, append_symints=True, subclass_metas=None
+            ),
+            # We pass append_symints=False here because the partitioner will
+            # capture and add any extra argument
+            unwrap_tensor_subclasses(
+                args[1], is_runtime=False, append_symints=False, subclass_metas=None
+            ),
+        )
+    else:
+        args_unwrapped = unwrap_tensor_subclasses(
+            args, is_runtime=False, append_symints=True, subclass_metas=None
+        )
     remapped_static_indices = remap_unwrapped_subclass_arg_indices(
         args, meta.static_input_indices
     )
@@ -822,7 +852,7 @@ def aot_dispatch_subclass(
     # However, the original ViewAndMutationMeta that we computed was created
     # on the subclass -> subclass graph,
     # which can have a different number of outputs than the dense -> dense graph.
-    # That's why we createa a fresh metadata object on the dense -> dense function here,
+    # That's why we created a fresh metadata object on the dense -> dense function here,
     # and plumb it back up to the partitioner.
     # See Note: [Partitioner handling for Subclasses, Part 2] for more info.
     meta_updated = run_functionalized_fw_and_collect_metadata(
