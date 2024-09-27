@@ -170,10 +170,10 @@ std::optional<DeviceIndex> getDeviceIndexWithPrimaryContext() {
 }
 
 namespace _internal {
-bool dummyHasPrimaryContext(C10_UNUSED DeviceIndex device_index) {
+static bool dummyHasPrimaryContext(C10_UNUSED DeviceIndex device_index) {
   TORCH_CHECK(false, "Should never been called");
 }
-bool (*hasPrimaryContext)(DeviceIndex) = dummyHasPrimaryContext;
+static bool (*hasPrimaryContext)(DeviceIndex) = dummyHasPrimaryContext;
 
 // Private api to be called from CUDAHooks.cpp
 C10_CUDA_API void setHasPrimaryContext(bool (*func)(DeviceIndex)) {
@@ -208,7 +208,7 @@ cudaError_t GetDeviceCount(int* dev_count) {
 // call y = torch.empty(1, device=“cuda”) # CUDA context is created on cuda:0
 // ```
 #if CUDA_VERSION >= 12000
-thread_local DeviceIndex targetDeviceIndex = -1;
+thread_local static DeviceIndex targetDeviceIndex = -1;
 
 cudaError_t GetDevice(DeviceIndex* device) {
   if (targetDeviceIndex >= 0) {
