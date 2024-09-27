@@ -1,7 +1,7 @@
 # mypy: allow-untyped-defs
 import operator
 from collections import defaultdict
-from typing import Any, Callable, DefaultDict, Dict, Optional, Tuple, Type
+from typing import Any, Callable, DefaultDict, Dict, List, Optional, Tuple, Type
 
 import sympy
 
@@ -16,6 +16,7 @@ from torch.fx.experimental.symbolic_shapes import (
 from torch.utils import _pytree as pytree
 from torch.utils._pytree import tree_map
 
+from . import inductor_prims
 from .virtualized import V
 
 
@@ -249,3 +250,57 @@ def is_node_realized(node: torch.fx.Node) -> bool:
 
     # Otherwise, assume node isn't realized
     return False
+
+
+class UserVisibleOutputStrideFixUpper:
+    """
+    Ensures that the strides of user-visible outputs remain unchanged after FX
+    passes. Instantiate this object before the FX passes and call .fixup()
+    afterward to fixup strides.
+    """
+
+    def __init__(
+        self, graph: torch.fx.Graph, user_visible_output_idxs: Optional[List[int]]
+    ) -> None:
+        self.graph = graph
+        self.output_idx_to_strides: Dict[int, Tuple[int, ...]] = {}
+
+        if user_visible_output_idxs is None:
+            return
+
+        outputs = graph.find_nodes(op="output")[0].args[0]
+        for idx in user_visible_output_idxs:
+            if not isinstance(outputs[idx], torch.fx.Node):
+                continue
+            val = outputs[idx].meta.get("val")
+            if isinstance(val, torch.Tensor):
+                self.output_idx_to_strides[idx] = val.stride()
+
+    def fixup(self) -> None:
+        from torch.fx.experimental.symbolic_shapes import free_unbacked_symbols
+
+        output_node = self.graph.find_nodes(op="output")[0]
+        new_outputs = list(output_node.args[0])
+
+        for idx, orig_strides in self.output_idx_to_strides.items():
+            node = new_outputs[idx]
+            val = node.meta.get("val")
+            if not isinstance(val, torch.Tensor):
+                continue
+
+            new_strides = val.stride()
+            if (
+                new_strides != orig_strides
+                and len(free_unbacked_symbols(orig_strides)) == 0
+                and len(orig_strides)
+            ):
+                with self.graph.inserting_after(node):
+                    new_output = self.graph.call_function(
+                        inductor_prims.force_stride_order,
+                        (node, orig_strides),
+                    )
+                    # User visible output tride fixup is performed before
+                    # FakeTensorUpdater, so we can ommit setting .meta["val"].
+                    new_outputs[idx] = new_output
+
+        output_node.args = (tuple(new_outputs),)
