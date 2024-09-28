@@ -581,7 +581,7 @@ static PyObject* THPStorage_weakRef(PyObject* self, PyObject* args) {
   END_HANDLE_TH_ERRORS
 }
 
-PyObject* THPStorage_newWithWeakPtr(PyObject* _unused, PyObject* arg) {
+static PyObject* THPStorage_newWithWeakPtr(PyObject* _unused, PyObject* arg) {
   HANDLE_TH_ERRORS
   TORCH_CHECK(
       THPUtils_checkLong(arg), "_new_with_weak_ptr(): arg must be an 'int'");
@@ -594,7 +594,7 @@ PyObject* THPStorage_newWithWeakPtr(PyObject* _unused, PyObject* arg) {
   END_HANDLE_TH_ERRORS
 }
 
-PyObject* THPStorage_freeWeakRef(PyObject* _unused, PyObject* arg) {
+static PyObject* THPStorage_freeWeakRef(PyObject* _unused, PyObject* arg) {
   HANDLE_TH_ERRORS
   if (arg == Py_None) {
     Py_RETURN_NONE;
@@ -608,7 +608,7 @@ PyObject* THPStorage_freeWeakRef(PyObject* _unused, PyObject* arg) {
   END_HANDLE_TH_ERRORS
 }
 
-PyObject* THPStorage_expired(PyObject* _unused, PyObject* arg) {
+static PyObject* THPStorage_expired(PyObject* _unused, PyObject* arg) {
   HANDLE_TH_ERRORS
   TORCH_CHECK(THPUtils_checkLong(arg), "_expired(): arg must be an 'int'");
   c10::StorageImpl* weak_storage = (c10::StorageImpl*)PyLong_AsVoidPtr(arg);
@@ -617,7 +617,7 @@ PyObject* THPStorage_expired(PyObject* _unused, PyObject* arg) {
   END_HANDLE_TH_ERRORS
 }
 
-PyObject* THPStorage_sharedFd(PyObject* self, PyObject* noargs) {
+static PyObject* THPStorage_sharedFd(PyObject* self, PyObject* noargs) {
   HANDLE_TH_ERRORS
   THPStorage_assertNotNull(self);
   at::MapAllocator* ctx = nullptr;
@@ -631,7 +631,7 @@ PyObject* THPStorage_sharedFd(PyObject* self, PyObject* noargs) {
   END_HANDLE_TH_ERRORS
 }
 
-PyObject* THPStorage_isShared(PyObject* self, PyObject* noargs) {
+static PyObject* THPStorage_isShared(PyObject* self, PyObject* noargs) {
   const auto& storage = THPStorage_Unpack(self);
   if (storage.device_type() == at::kCUDA) {
     Py_RETURN_TRUE;
