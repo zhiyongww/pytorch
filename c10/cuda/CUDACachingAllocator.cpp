@@ -3627,8 +3627,7 @@ class NativeCachingAllocator : public CUDAAllocator {
         c10::DeviceIndex device,
         std::string& handle,
         const DeviceCachingAllocator& allocator)
-        : device_(device)
-          {
+        : device_(device) {
       int type = SHAREABLE_CUDA_MALLOC;
       std::istringstream ss(handle);
       if (handle.size() != CUDA_IPC_HANDLE_SIZE) {
