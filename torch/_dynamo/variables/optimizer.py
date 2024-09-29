@@ -15,6 +15,7 @@ from ..source import (
     GradSource,
 )
 from ..utils import GLOBAL_KEY_PREFIX
+from .base import VariableTracker
 from .constant import ConstantVariable
 from .dicts import ConstDictVariable
 from .lists import ListVariable
@@ -24,8 +25,6 @@ from .user_defined import UserDefinedObjectVariable
 
 if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslator
-
-    from .base import VariableTracker
 
 
 class ArgMappingException(Exception):
@@ -124,7 +123,6 @@ class OptimizerVariable(UserDefinedObjectVariable):
 
     def _set_capturable(self, tx):
         from . import LazyVariableTracker
-        from .builder import VariableBuilder
 
         # We only set capturable if params are on cuda
         # and the state is not initialized
@@ -145,10 +143,9 @@ class OptimizerVariable(UserDefinedObjectVariable):
             if safe_to_set_capturable(group):
                 group["capturable"] = True
 
+        source = self.source and AttrSource(self.source, "param_groups")
         param_groups_vt = LazyVariableTracker.realize_all(
-            VariableBuilder(tx, AttrSource(self.source, "param_groups"))(
-                self.value.param_groups
-            )
+            VariableTracker.create(tx, self.value.param_groups, source)
         )
         for ind, param_group_vt in enumerate(param_groups_vt.items):
             key = ConstDictVariable._HashableTracker(
@@ -191,7 +188,6 @@ class OptimizerVariable(UserDefinedObjectVariable):
 
     def map_sources_and_install_guards(self, tx):
         from ..decorators import mark_static_address
-        from .builder import VariableBuilder
         from .lazy import LazyVariableTracker
 
         self.grad_to_source = {}
@@ -212,15 +208,13 @@ class OptimizerVariable(UserDefinedObjectVariable):
 
         # Recursively realize the variable trackers for optim.state and
         # optim.param_groups, which recursively install the necessary guards.
+        params_groups_source = self.source and AttrSource(self.source, "param_groups")
         param_groups_vt = LazyVariableTracker.realize_all(
-            VariableBuilder(tx, AttrSource(self.source, "param_groups"))(
-                self.value.param_groups
-            )
+            VariableTracker.create(tx, self.value.param_groups, params_groups_source)
         )
 
-        state_vt = VariableBuilder(tx, AttrSource(self.source, "state"))(
-            self.value.state
-        )
+        state_source = self.source and AttrSource(self.source, "state")
+        state_vt = VariableTracker.create(tx, self.value.state, state_source)
 
         # We need to realize the top level state dict to populate
         # the guard locals
@@ -242,15 +236,15 @@ class OptimizerVariable(UserDefinedObjectVariable):
                                 key_index = i
                                 break
                         if key_index:
-                            state_source = AttrSource(self.source, "state")
                             LazyVariableTracker.realize_all(
-                                VariableBuilder(
+                                VariableTracker.create(
                                     tx,
+                                    self.value.state[param],
                                     GetItemSource(
                                         state_source,
                                         ConstDictKeySource(state_source, key_index),
                                     ),
-                                )(self.value.state[param])
+                                )
                             )
                             break
 
@@ -273,7 +267,6 @@ class OptimizerVariable(UserDefinedObjectVariable):
 
         # We have to again iterate over the state dict to collect the
         # tensor_to_source dict. This is used for the finalizer.
-        state_source = AttrSource(self.source, "state")
         for idx, (p, value) in enumerate(self.value.state.items()):
             p_state_source = GetItemSource(
                 state_source, ConstDictKeySource(state_source, idx)
@@ -289,7 +282,6 @@ class OptimizerVariable(UserDefinedObjectVariable):
     def wrap_tensor(self, tx: "InstructionTranslator", tensor_value):
         """Wrap state tensor in a TensorVariable"""
         from ..decorators import mark_static_address
-        from .builder import VariableBuilder
 
         # If we have a source for a tensor already use it,
         # if we have not seen a tensor before, stash and use a
@@ -299,20 +291,19 @@ class OptimizerVariable(UserDefinedObjectVariable):
         if tensor_value in self.tensor_to_source:
             # mark these tensors as static for cudagraphs
             mark_static_address(tensor_value)
-            builder = VariableBuilder(tx, self.tensor_to_source[tensor_value])
-            self.static_tensor_names.add(tx.output.module_key_name(builder.name))
+            source = self.tensor_to_source[tensor_value]
+            self.static_tensor_names.add(tx.output.module_key_name(source.name))
         elif tensor_value in self.grad_to_source:
-            builder = VariableBuilder(tx, self.grad_to_source[tensor_value])
+            source = self.grad_to_source[tensor_value]
         else:
             # mark these tensors as static for cudagraphs
             mark_static_address(tensor_value)
 
             global_name = tx.store_global_weakref_by_id(GLOBAL_KEY_PREFIX, tensor_value)
-            builder = VariableBuilder(tx, GlobalWeakRefSource(global_name))
-            self.static_tensor_names.add(tx.output.module_key_name(builder.name))
+            source = GlobalWeakRefSource(global_name)
+            self.static_tensor_names.add(tx.output.module_key_name(source.name))
 
-        result = builder(tensor_value)
-        return result
+        return VariableTracker.create(tx, tensor_value, source)
 
     def update_list_args(
         self, tx: "InstructionTranslator", args, kwargs, py_args, py_kwargs
@@ -328,14 +319,8 @@ class OptimizerVariable(UserDefinedObjectVariable):
                     if isinstance(val, torch.Tensor):
                         arg.items.append(self.wrap_tensor(tx, val))
                     else:
-                        from .builder import SourcelessBuilder, VariableBuilder
-
-                        if arg.source:
-                            arg.items.append(
-                                VariableBuilder(tx, GetItemSource(arg.source, i))(val)
-                            )
-                        else:
-                            arg.items.append(SourcelessBuilder.create(tx, val))
+                        source = arg.source and GetItemSource(arg.source, i)
+                        arg.items.append(VariableTracker.create(tx, val, source))
 
     def create_finalizer(self, tx):
         names_to_delete = self.static_tensor_names
