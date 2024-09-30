@@ -293,10 +293,8 @@ public:
 #if defined(_WIN32) && defined(__aarch64__)
   Vectorized<T> map(T (*const f)(T)) const {
     Vectorized<T> ret;
-    for (int64_t i = 0; i < size(); i++) {
+    for (int64_t i = 0; i != size(); i++) {
       ret[i] = f(values[i]);
-      if (++i < size())
-        ret[i] = f(values[i]);
     }
     return ret;
   }
