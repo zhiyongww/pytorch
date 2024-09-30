@@ -19,6 +19,7 @@ from common_utils import decorate, decorateForModules, skip, skipOps, xfail
 
 import torch
 import torch._dynamo as torchdynamo
+import torch._functorch.config
 import torch.nn as nn
 import torch.utils._pytree as pytree
 from functorch import grad, jacrev, make_fx, vjp, vmap
@@ -5988,6 +5989,228 @@ class TestAOTModuleSimplified(AOTTestCase):
         inp = torch.randn(3, 4)
         with torch.no_grad():
             torch.compile(m, fullgraph=True)(inp)
+
+    @torch._functorch.config.patch("aotd_debug_profile", True)
+    def test_aotd_debug_profile_overhead_logging(self):
+        last_fwd_runtime_wrapper_start_time = None
+        last_fwd_start_time = None
+        last_fwd_compiled_module_start_time = None
+        last_fwd_compiled_module_duration = None
+        last_fwd_runtime_wrapper_duration = None
+
+        last_bwd_start_time = None
+        last_bwd_compiled_module_start_time = None
+        last_bwd_compiled_module_duration = None
+
+        fwd_overheads_ns = []
+        fwd_compiled_module_durations_ns = []
+        fwd_total_durations_ns = []
+        fwd_runtime_wrapper_durations_ns = []
+
+        bwd_overheads_ns = []
+        bwd_compiled_module_durations_ns = []
+        bwd_total_durations_ns = []
+
+        EVENT_NAME_PREFIX = "torch._functorch._aot_autograd.runtime_wrappers"
+
+        def on_event(event):
+            event_name = event["name"]
+            event_ph = event["ph"]
+            if event_name == f"{EVENT_NAME_PREFIX}.runtime_wrapper":
+                if event_ph == "B":
+                    nonlocal last_fwd_runtime_wrapper_start_time
+                    assert last_fwd_runtime_wrapper_start_time is None
+                    last_fwd_runtime_wrapper_start_time = event["ts"]
+                elif event_ph == "E":
+                    assert last_fwd_runtime_wrapper_start_time is not None
+                    last_fwd_runtime_wrapper_duration = (
+                        event["ts"] - last_fwd_runtime_wrapper_start_time
+                    )
+                    fwd_runtime_wrapper_durations_ns.append(
+                        last_fwd_runtime_wrapper_duration
+                    )
+                    nonlocal last_fwd_compiled_module_duration
+                    fwd_overheads_ns.append(
+                        last_fwd_runtime_wrapper_duration
+                        - last_fwd_compiled_module_duration
+                    )
+                    last_fwd_runtime_wrapper_start_time = None
+            if (
+                event_name
+                == f"{EVENT_NAME_PREFIX}.CompiledFunction.forward.compiled_module"
+            ):
+                if event_ph == "B":
+                    nonlocal last_fwd_compiled_module_start_time
+                    last_fwd_compiled_module_start_time = event["ts"]
+                elif event_ph == "E":
+                    assert last_fwd_compiled_module_start_time != -1
+                    last_fwd_compiled_module_duration = (
+                        event["ts"] - last_fwd_compiled_module_start_time
+                    )
+                    last_fwd_compiled_module_start_time = -1
+                    fwd_compiled_module_durations_ns.append(
+                        last_fwd_compiled_module_duration
+                    )
+            elif (
+                event_name
+                == f"{EVENT_NAME_PREFIX}.CompiledFunction.backward.compiled_module"
+            ):
+                if event_ph == "B":
+                    nonlocal last_bwd_compiled_module_start_time
+                    last_bwd_compiled_module_start_time = event["ts"]
+                elif event_ph == "E":
+                    nonlocal last_bwd_compiled_module_duration
+                    last_bwd_compiled_module_duration = (
+                        event["ts"] - last_bwd_compiled_module_start_time
+                    )
+                    bwd_compiled_module_durations_ns.append(
+                        last_bwd_compiled_module_duration
+                    )
+            elif event_name == f"{EVENT_NAME_PREFIX}.CompiledFunction.forward":
+                if event_ph == "B":
+                    nonlocal last_fwd_start_time
+                    last_fwd_start_time = event["ts"]
+                elif event_ph == "E":
+                    last_forward_duration = event["ts"] - last_fwd_start_time
+                    fwd_total_durations_ns.append(last_forward_duration)
+            elif event_name == f"{EVENT_NAME_PREFIX}.CompiledFunction.backward":
+                if event_ph == "B":
+                    nonlocal last_bwd_start_time
+                    last_bwd_start_time = event["ts"]
+                elif event_ph == "E":
+                    last_backward_duration = event["ts"] - last_bwd_start_time
+                    bwd_overheads_ns.append(
+                        last_backward_duration - last_bwd_compiled_module_duration
+                    )
+                    bwd_total_durations_ns.append(last_backward_duration)
+
+        chromium_logger = torch._dynamo.utils.get_chromium_event_logger()
+        chromium_logger.add_listener(on_event)
+
+        num_iters = 30
+        shape = (3, 4)
+        input_two_tensor_depth = 8
+
+        class M(torch.nn.Module):
+            def __init__(self, p) -> None:
+                super().__init__()
+                self.p = p
+
+            def forward(self, x):
+                return self.p + x + x
+
+        m = M(torch.randn(shape, requires_grad=True))
+        m.train()
+
+        def inp_recursive_two_tensor(x, dephth: int):
+            if dephth == 1:
+                return TwoTensor(x.clone(), x.clone())
+            return TwoTensor(
+                inp_recursive_two_tensor(x, dephth - 1),
+                inp_recursive_two_tensor(x, dephth - 1),
+            )
+
+        def inps_fn(x):
+            return inp_recursive_two_tensor(x, input_two_tensor_depth),
+
+        benchmark_inps = [
+            inps_fn(torch.randn(shape, requires_grad=True))
+            for _ in range(num_iters)
+        ]
+        m(*benchmark_inps[0])
+        import os
+
+        for i, inps in enumerate(benchmark_inps):
+            if (i == 5):
+                print(f"XXX PID:{os.getpid()}")
+                breakpoint()
+
+            outs = torch.compile(m, backend="inductor", fullgraph=True)(*inps)
+            outs[0].sum().backward()
+
+        def _assert_len():
+            assert len(fwd_compiled_module_durations_ns) == num_iters
+            assert len(fwd_overheads_ns) == num_iters
+            assert len(fwd_total_durations_ns) == num_iters
+            assert len(bwd_compiled_module_durations_ns) == num_iters
+            assert len(bwd_overheads_ns) == num_iters
+            assert len(bwd_total_durations_ns) == num_iters
+            assert len(fwd_runtime_wrapper_durations_ns) == num_iters
+
+        _assert_len()
+
+        def _print_stat(s: str):
+            fwd_runtime_wrapper_avg_ns = (
+                sum(fwd_runtime_wrapper_durations_ns) / num_iters
+            )
+            fwd_compiled_module_duration_avg_ns = (
+                sum(fwd_compiled_module_durations_ns) / num_iters
+            )
+            fwd_aotd_overhead_avg_ns = sum(fwd_overheads_ns) / num_iters
+            fwd_runtime_wrapper_duration_avg_ns = (
+                sum(fwd_runtime_wrapper_durations_ns) / num_iters
+            )
+            print(
+                f"{s} FW_aotd_overhead_avg:{fwd_aotd_overhead_avg_ns:.3f}ns "
+                f"{100 * fwd_aotd_overhead_avg_ns / fwd_compiled_module_duration_avg_ns:.3f}% "
+                f"of fwd_compiled_module_duration_avg_ns:{fwd_compiled_module_duration_avg_ns:.3f}ns "
+                f"fwd_runtime_wrapper_duration_avg_ns:{fwd_runtime_wrapper_duration_avg_ns:.3f}ns"
+            )
+
+            bwd_compiled_module_duration_avg_ns = (
+                sum(bwd_compiled_module_durations_ns) / num_iters
+            )
+            bwd_aotd_overhead_avg_ns = sum(bwd_overheads_ns) / num_iters
+            bwd_total_duration_avg_ns = sum(bwd_total_durations_ns) / num_iters
+            print(
+                f"{s} BW_aotd_overhead_avg:{bwd_aotd_overhead_avg_ns:.3f}ns "
+                f"{100 * bwd_aotd_overhead_avg_ns / bwd_compiled_module_duration_avg_ns:.3f}% "
+                f"of bwd_compiled_module_duration_avg:{bwd_compiled_module_duration_avg_ns:.3f}ns "
+                f"bwd_total_duration_avg:{bwd_total_duration_avg_ns:.3f}ns"
+            )
+
+        # Uncomment for adhoc aotd overhead perf experimentation
+        _print_stat("   SUBCLASS")
+
+        fwd_compiled_module_durations_ns.clear()
+        fwd_overheads_ns.clear()
+        fwd_total_durations_ns.clear()
+        fwd_runtime_wrapper_durations_ns.clear()
+
+        bwd_compiled_module_durations_ns.clear()
+        bwd_overheads_ns.clear()
+        bwd_total_durations_ns.clear()
+
+        class M2(torch.nn.Module):
+            def __init__(self, p) -> None:
+                super().__init__()
+                self.p = p
+
+            def forward(self, *plain_tensors):
+                return (self.p + x + x for x in plain_tensors)
+
+        m2 = M2(torch.randn(shape, requires_grad=True))
+        m2.train()
+
+        def inps_fn2(x):
+            return (x.clone() for i in range(2 ** input_two_tensor_depth))
+
+        benchmark_inps2 = [
+            inps_fn2(
+                torch.randn(shape, requires_grad=True)
+            )
+            for _ in range(num_iters)
+        ]
+
+        m(*benchmark_inps[0])
+
+        for i, inps in enumerate(benchmark_inps2):
+            outs = torch.compile(m2, backend="inductor", fullgraph=True)(*inps)
+            outs[0].sum().backward()
+
+        _assert_len()
+        # Uncomment for adhoc aotd overhead perf experimentation
+        _print_stat("NO_SUBCLASS")
 
 
 # entries in here don't work and need to be fixed.
