@@ -6564,6 +6564,8 @@ class WhileLoop(ExternKernel):
     cond_subgraph: Optional[Subgraph] = None
     body_subgraph: Optional[Subgraph] = None
     outputs: Optional[List[MultiOutput]] = None
+    mutated_inputs: Optional[List[TensorBox]] = None
+    iter_idx_expr: Optional[sympy.Expr] = None
 
     def __init__(
         self,
@@ -6572,11 +6574,15 @@ class WhileLoop(ExternKernel):
         cond_subgraph: Subgraph,
         body_subgraph: Subgraph,
         layout: MultiOutputLayout,
+        mutated_inputs: List[TensorBox],
+        iter_idx_expr: sympy.Symbol,
     ):
         self.carried_inputs = carried_inputs
         self.additional_inputs = additional_inputs
         self.cond_subgraph = cond_subgraph
         self.body_subgraph = body_subgraph
+        self.iter_idx_expr = iter_idx_expr
+        self.mutated_inputs = mutated_inputs
 
         super().__init__(
             name=None,
@@ -6592,27 +6598,20 @@ class WhileLoop(ExternKernel):
         cls,
         cond_fn: Subgraph,
         body_fn: Subgraph,
-        carried_inputs: List[TensorBox],
-        additional_inputs: List[TensorBox],
+        carried_inputs: List[Union[TensorBox, ComputedBuffer]],
+        additional_inputs: List[Union[TensorBox, ComputedBuffer]],
+        mutated_inputs: Optional[List[Union[TensorBox, ComputedBuffer]]] = None,
+        iter_idx_expr: Optional[sympy.Symbol] = None,
     ):
+        mutated_inputs = [] if mutated_inputs is None else mutated_inputs
+        mutated_indices = [carried_inputs.index(x) for x in mutated_inputs]
+
         carried_inputs = [cls.realize_input(x) for x in carried_inputs]
+        mutated_inputs = [carried_inputs[i] for i in mutated_indices]
         additional_inputs = [cls.realize_input(x) for x in additional_inputs]
         all_inputs = carried_inputs + additional_inputs
 
-        fx_all_inputs = V.graph.current_node.args[-2] + V.graph.current_node.args[-1]  # type: ignore[operator]
-        fake_all_inputs = [x.meta["val"] for x in fx_all_inputs]  # type: ignore[union-attr]
-
-        for subgraph in (cond_fn, body_fn):
-            if subgraph.graph is None:
-                # create and lower subgraphs
-                subgraph.graph = V.graph.make_subgraph(
-                    gm=subgraph.graph_module,
-                    example_inputs=fx_all_inputs,  # type: ignore[arg-type]
-                    subgraph_name=subgraph.name,
-                )
-                with V.set_graph_handler(subgraph.graph):
-                    subgraph.graph.run(*fake_all_inputs)
-
+        assert cond_fn.graph is not None and body_fn.graph is not None
         cond_outputs = cond_fn.graph.graph_outputs  # type: ignore[union-attr]
         body_outputs = body_fn.graph.graph_outputs  # type: ignore[union-attr]
 
@@ -6624,8 +6623,9 @@ class WhileLoop(ExternKernel):
 
         # make sure cond_fn returns a boolean scalar Tensor
         assert len(cond_outputs) == 1, cond_outputs
-        assert cond_outputs[0].get_dtype() == torch.bool, cond_outputs
-        assert len(cond_outputs[0].get_size()) == 0, cond_outputs
+        if not isinstance(cond_outputs[0], ShapeAsConstantBuffer):
+            assert cond_outputs[0].get_dtype() == torch.bool, cond_outputs
+            assert len(cond_outputs[0].get_size()) == 0, cond_outputs
 
         assert (
             len(all_inputs) > 0
@@ -6651,6 +6651,8 @@ class WhileLoop(ExternKernel):
             body_subgraph=body_fn,
             # asserted above that there is at least one operand
             layout=MultiOutputLayout(device),
+            mutated_inputs=mutated_inputs,
+            iter_idx_expr=iter_idx_expr,
         )
 
         outputs = [
@@ -6666,6 +6668,7 @@ class WhileLoop(ExternKernel):
                 [(list, i)],
             )
             for i, output in enumerate(body_outputs)
+            if i not in mutated_indices
         ]
 
         for inp, out in zip(carried_inputs, outputs):
@@ -6678,10 +6681,20 @@ class WhileLoop(ExternKernel):
                 V.graph.never_reuse_buffers.add(out.get_name())
 
         while_loop.outputs = outputs
+        while_loop.mutation_outputs.extend(
+            [
+                MutationOutput(NoneLayout(device), inp, while_loop)
+                for inp in while_loop.mutated_inputs  # type: ignore[union-attr]
+            ]
+        )
         return outputs
 
     def codegen(self, wrapper):
         wrapper.codegen_while_loop(self)
+
+    def get_mutation_names(self):
+        assert self.mutated_inputs is not None
+        return [inp.get_name() for inp in self.mutated_inputs]
 
 
 class EffectfulKernel(FallbackKernel):
