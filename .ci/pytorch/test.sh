@@ -454,7 +454,6 @@ test_perf_for_dashboard() {
       device=cpu_x86
     elif [[ "${TEST_CONFIG}" == *cpu_aarch64* ]]; then
       device=cpu_aarch64
-      test_inductor_set_freezing
     fi
     test_inductor_set_cpu_affinity
   elif [[ "${TEST_CONFIG}" == *cuda_a10g* ]]; then
@@ -532,6 +531,11 @@ test_perf_for_dashboard() {
         # Copy cudagraph results as mock data, easiest choice?
         cp "$TEST_REPORTS_DIR/${backend}_with_cudagraphs_${suite}_${dtype}_${mode}_${device}_${target}.csv" \
           "$TEST_REPORTS_DIR/${backend}_cudagraphs_low_precision_${suite}_quant_${mode}_${device}_${target}.csv"
+      fi
+      if [[ "$DASHBOARD_TAG" == *default_cpu_f32-true* ]]; then
+        TORCHINDUCTOR_FREEZING=1 TORCHINDUCTOR_CPP_WRAPPER=1  $TASKSET python "benchmarks/dynamo/$suite.py" \
+            "${target_flag[@]}" --"$mode" --float32 --backend "$backend" --disable-cudagraphs "$@" \
+            --output "$TEST_REPORTS_DIR/${backend}_no_cudagraphs_${suite}_float32_${mode}_${device}_${target}.csv"
       fi
     done
   done
@@ -721,10 +725,6 @@ test_inductor_set_cpu_affinity(){
   export OMP_NUM_THREADS=$cores
   end_core=$((cores-1))
   export TASKSET="taskset -c 0-$end_core"
-}
-
-test_inductor_set_freezing(){
-  export TORCHINDUCTOR_FREEZING=1
 }
 
 test_inductor_torchbench_cpu_smoketest_perf(){

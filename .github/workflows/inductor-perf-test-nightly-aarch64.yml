@@ -27,6 +27,11 @@ on:
         required: false
         type: boolean
         default: true
+      default_cpu_f32:
+        description: Run inductor_default with f32 precision?
+        required: false
+        type: boolean
+        default: true
       dynamic:
         description: Run inductor_dynamic_shapes?
         required: false
