@@ -1,7 +1,7 @@
 # Owner(s): ["module: inductor"]
 import torch
 import torch._inductor.config as inductor_config
-from torch._inductor.test_case import TestCase, run_tests
+from torch._inductor.test_case import run_tests, TestCase
 from torch._inductor.utils import run_and_get_code
 from torch.testing._internal.triton_utils import requires_cuda
 
