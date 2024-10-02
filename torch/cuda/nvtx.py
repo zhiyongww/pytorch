@@ -92,6 +92,7 @@ def device_range_start(msg: str, stream: int = 0) -> object:
 
     Args:
         msg (str): ASCII message to associate with the range.
+        stream (int): CUDA stream id.
     """
     return _nvtx.deviceRangeStart(msg, stream)
 
@@ -103,6 +104,7 @@ def device_range_end(range_handle: object, stream: int = 0) -> None:
 
     Args:
         range_handle: an unique handle for the start range.
+        stream (int): CUDA stream id.
     """
     _nvtx.deviceRangeEnd(range_handle, stream)
 

@@ -437,6 +437,8 @@ coverage_ignore_functions = [
     "range",
     "range_end",
     "range_start",
+    "device_range_end",
+    "device_range_start",
     # torch.cuda.profiler
     "init",
     "profile",
