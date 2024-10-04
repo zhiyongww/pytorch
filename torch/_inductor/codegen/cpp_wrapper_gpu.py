@@ -17,7 +17,7 @@ from ..virtualized import V
 from .aoti_hipify_utils import maybe_hipify_code_wrapper
 from .common import get_device_op_overrides
 from .cpp_utils import cexpr, DTYPE_TO_CPP
-from .cpp_wrapper_cpu import CppWrapperCpu
+from .cpp_wrapper_cpu import CppWrapperCpu, SubgraphCppWrapperCpu
 from .wrapper import SymbolicCallArg
 
 
@@ -170,6 +170,12 @@ class CppWrapperGpu(CppWrapperCpu):
         self.device_codegen = get_device_op_overrides(self.device)
         super().__init__()
         self.grid_id = count()
+
+    @staticmethod
+    def create(is_subgraph, subgraph_name, parent_wrapper):
+        if is_subgraph:
+            return SubgraphCppWrapperGpu(subgraph_name, parent_wrapper)
+        return CppWrapperGpu()
 
     def write_header(self):
         if V.graph.is_const_graph:
@@ -460,3 +466,7 @@ class CppWrapperGpu(CppWrapperCpu):
                 self.writeline(f"workspace.zero_(){self.ending}")
             if config.triton.autotune_at_compile_time:
                 self.kernel_autotune_calls.writeline(f"workspace.zero_(){self.ending}")
+
+
+class SubgraphCppWrapperGpu(SubgraphCppWrapperCpu, CppWrapperGpu):
+    pass

@@ -9,7 +9,7 @@ import torch._ops
 from .. import config, ir
 from ..virtualized import V
 from .cpp_utils import cexpr, DTYPE_TO_CPP
-from .cpp_wrapper_cpu import CppWrapperCpu
+from .cpp_wrapper_cpu import CppWrapperCpu, SubgraphCppWrapperCpu
 from .wrapper import (
     EnterSubgraphLine,
     ExitSubgraphLine,
@@ -71,6 +71,12 @@ class CppWrapperCpuArrayRef(CppWrapperCpu):
         self.expr_printer = cexpr
         self.allow_stack_allocation: Optional[bool] = None
         self.stack_allocated_buffers: Dict[BufferName, ir.Buffer] = {}
+
+    @staticmethod
+    def create(is_subgraph, subgraph_name, parent_wrapper):
+        if is_subgraph:
+            return SubgraphCppWrapperCpuArrayRef(subgraph_name, parent_wrapper)
+        return CppWrapperCpuArrayRef()
 
     def memory_plan(self):
         from .memory_planning import MemoryPlanner
@@ -574,3 +580,7 @@ class CppWrapperCpuArrayRef(CppWrapperCpu):
                 return final_tmp_name
         else:
             return final_tmp_name
+
+
+class SubgraphCppWrapperCpuArrayRef(SubgraphCppWrapperCpu, CppWrapperCpuArrayRef):
+    pass

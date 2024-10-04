@@ -63,6 +63,7 @@ from .codegen.common import (
     get_wrapper_codegen_for_device,
     init_backend_registration,
 )
+from .codegen.wrapper import PythonWrapperCodegen
 from .exc import (
     CppWrapperCodegenError,
     LoweringException,
@@ -106,7 +107,6 @@ from .virtualized import NullHandler, V
 
 if TYPE_CHECKING:
     from torch._higher_order_ops.effects import _EffectType
-    from .codegen.wrapper import PythonWrapperCodegen
 
 from torch._inductor.codecache import output_code_log
 
@@ -642,18 +642,20 @@ class GraphLowering(torch.fx.Interpreter):
         gm: torch.fx.GraphModule,
         example_inputs: List[torch.Tensor],
         subgraph_name: str,
-    ) -> "GraphLowering":
+    ) -> "SubgraphLowering":
         """
-        Make a subgraph of the current graph with all inherited
-        parts, except the graph module (`gm`) and `example_inputs`.
-        The subgraphs are lowered separately, but intended to be
-        inlined in the parent graph's codegening. Hence the need
-        for maintaining the same `shape_env` and other properties.
-        The subgraph name is qualified by the parent graph's name.
+        Make a subgraph of the current graph with all inherited parts, except
+        the graph module (`gm`) and `example_inputs`.  The subgraphs are lowered
+        separately and lifted into a separate function in the parent output
+        wrapper code.  The subgraph name is qualified by the parent graph's
+        name.
         """
-        return GraphLowering(
+        return SubgraphLowering(
+            parent=self,
             gm=gm,
             example_inputs=example_inputs,
+            # TODO(anijain2305) - Why do I need this? -
+            # test_while_loop_simple_control_flow_device_cpu_dynamic_True
             shape_env=self._shape_env,
             cpp_wrapper=self.cpp_wrapper,
             aot_mode=self.aot_mode,
@@ -745,6 +747,9 @@ class GraphLowering(torch.fx.Interpreter):
             )
 
         return None
+
+    def add_symbol_graph_input(self, symbol: sympy.Expr) -> None:
+        raise RuntimeError("Should not be called for the main graph")
 
     def get_buffer(self, buffer_name: str) -> Union[ir.TensorBox, ir.Buffer]:
         buf = self.try_get_buffer(buffer_name)
@@ -1692,7 +1697,12 @@ class GraphLowering(torch.fx.Interpreter):
             if not supported_dtype_of_cpp_wrapper(dtype, self.device_type):
                 raise CppWrapperCodegenError(f"Unsupported input dtype {dtype}")
 
-    def init_wrapper_code(self) -> None:
+    def init_wrapper_code(
+        self,
+        is_subgraph: bool = False,
+        subgraph_name: Optional[str] = None,
+        parent_wrapper_code: Optional[PythonWrapperCodegen] = None,
+    ) -> None:
         device_types = self.device_types.copy()
         device_types.discard("cpu")
         device_types.discard("meta")
@@ -1713,7 +1723,9 @@ class GraphLowering(torch.fx.Interpreter):
         assert (
             wrapper_code_gen_cls is not None
         ), f"Device {self.device_type} not supported"
-        self.wrapper_code = wrapper_code_gen_cls()
+        self.wrapper_code = wrapper_code_gen_cls.create(
+            is_subgraph, subgraph_name, parent_wrapper_code
+        )
 
         if self.const_module:
             # If we have const module, we could reuse the kernels
@@ -1841,24 +1853,24 @@ class GraphLowering(torch.fx.Interpreter):
         self.wrapper_code.pop_codegened_graph()
         return result
 
-    def codegen_subgraph(self, parent_graph: "GraphLowering") -> None:
-        """
-        This is a more compact version of the `codegen()` above
-        where we codegen this graph as a subgraph of some parent
-        graph. The parent graph is passed as an argument: the
-        intention is to inline codegening of the subgraph in
-        the parent graph's wrapper code (including the generated
-        kerenls). The wrapper code is not finalized (via `.generate()`
-        call), as this will be done in the parent graph's `codegen()`.
-        """
-        from .scheduler import Scheduler
+    # def codegen_subgraph(self, parent_graph: "GraphLowering") -> None:
+    #     """
+    #     This is a more compact version of the `codegen()` above
+    #     where we codegen this graph as a subgraph of some parent
+    #     graph. The parent graph is passed as an argument: the
+    #     intention is to inline codegening of the subgraph in
+    #     the parent graph's wrapper code (including the generated
+    #     kerenls). The wrapper code is not finalized (via `.generate()`
+    #     call), as this will be done in the parent graph's `codegen()`.
+    #     """
+    #     from .scheduler import Scheduler
 
-        self.wrapper_code = parent_graph.wrapper_code
-        self.device_ops = parent_graph.device_ops
-        self.cpp_wrapper = parent_graph.cpp_wrapper
+    #     self.wrapper_code = parent_graph.wrapper_code
+    #     self.device_ops = parent_graph.device_ops
+    #     self.cpp_wrapper = parent_graph.cpp_wrapper
 
-        self.scheduler = Scheduler(self.operations)
-        self.scheduler.codegen()
+    #     self.scheduler = Scheduler(self.operations)
+    #     self.scheduler.codegen()
 
     def count_bytes(
         self,
@@ -1977,3 +1989,38 @@ class GraphLowering(torch.fx.Interpreter):
             and self.graph_inputs[name].get_numel() == 1
             and self.graph_inputs[name].get_device().type == "cpu"
         ) or name in self.zero_dim_cpu_tensor_list
+
+
+class SubgraphLowering(GraphLowering):
+    """
+    Mostly a helper class for the subgraph lowering. The main goal is to call
+    init_wrapper_code with the subgraph related arguments.
+    """
+
+    def __init__(self, parent: GraphLowering, *args: Any, **kwargs: Any) -> None:
+        self.parent = parent
+        super().__init__(*args, **kwargs)
+
+    def init_wrapper_code(
+        self,
+        is_subgraph: bool = False,
+        subgraph_name: Optional[str] = None,
+        parent_wrapper_code: Optional[PythonWrapperCodegen] = None,
+    ) -> None:
+        super().init_wrapper_code(
+            is_subgraph=True,
+            subgraph_name=self.name,
+            parent_wrapper_code=self.parent.wrapper_code,
+        )
+
+    def add_symbol_graph_input(self, symbol: sympy.Expr) -> None:
+        """
+        Add a symbol input to the graph after the GraphLowering object is
+        created. For subgraphs, we might have to pass on the symints from the
+        parent graph. This symints might not be present in the aten Fx graph and
+        therefore absent in the original graph inputs.
+        """
+        if symbol.name in self.graph_input_names:
+            return
+        self.graph_inputs[symbol.name] = symbol
+        self.graph_input_names.append(symbol.name)
