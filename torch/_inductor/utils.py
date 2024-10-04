@@ -856,6 +856,59 @@ def argsort(seq) -> List[int]:
     return list(reversed(sorted(a_r, key=getter, reverse=True)))  # noqa: C413
 
 
+def argsort_sym(seq: List[Union[int, torch.SymInt, sympy.Expr]]) -> List[int]:
+    # Strategy: convert all symints to sympy.Expr, then evaluate them.
+    seq_with_exprs = []
+    maybe_shape_env = None
+    for idx, maybe_symint in enumerate(seq):
+        if isinstance(maybe_symint, torch.SymInt):
+            expr = maybe_symint.node.expr
+            shape_env = maybe_symint.node.shape_env
+            if maybe_shape_env is None:
+                maybe_shape_env = shape_env
+            else:
+                assert (
+                    maybe_shape_env is shape_env
+                ), "tried to compare SymInts from different shape_envs"
+        else:
+            expr = maybe_symint
+        seq_with_exprs.append((idx, expr))
+
+    def cmp(a, b):
+        a_val = a[1]
+        b_val = b[1]
+
+        def evaluate(expr):
+            if isinstance(expr, bool):
+                return expr
+            if maybe_shape_env is not None:
+                return maybe_shape_env.evaluate_expr(expr, size_oblivious=True)
+            # Grab Inductor's global shape_env as a last resort.
+            # We don't always do this because this helper function is called
+            # from non-Inductor contexts (but only with ints or symints)
+            from .virtualized import V
+
+            return V.graph._shape_env.evaluate_expr(expr, size_oblivious=True)
+
+        if evaluate(a_val < b_val):
+            return -1
+        if evaluate(a_val > b_val):
+            return 1
+        # If strides are the same, prefer the original order.
+        # (this matches argsort's algorithm).
+        # For strides = [2048, 2048, 16, 1], this is
+        # [3, 2, 1, 0].
+        if a[0] < b[0]:
+            return 1
+        if a[0] > b[0]:
+            return -1
+        return 0
+
+    seq_with_exprs_sorted = sorted(seq_with_exprs, key=functools.cmp_to_key(cmp))
+    result = [idx for idx, _ in seq_with_exprs_sorted]
+    return result
+
+
 @functools.lru_cache(8)
 def get_dtype_size(dtype):
     return torch.empty((), dtype=dtype).element_size()
