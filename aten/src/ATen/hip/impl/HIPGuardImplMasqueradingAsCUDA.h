@@ -216,6 +216,14 @@ struct HIPGuardImplMasqueradingAsCUDA final : public c10::impl::DeviceGuardImplI
     C10_HIP_CHECK(hipEventSynchronize(hip_event));
   }
 
+  void synchronizeDevice(const c10::DeviceIndex device_index) const override {
+    int orig_device;
+    C10_HIP_CHECK(hipGetDevice(&orig_device));
+    C10_HIP_CHECK(hipSetDevice(device_index));
+    C10_HIP_CHECK(hipDeviceSynchronize());
+    C10_HIP_CHECK(hipSetDevice(orig_device));
+  }
+
   void recordDataPtrOnStream(
     const c10::DataPtr& data_ptr,
     const Stream& stream) const override {
