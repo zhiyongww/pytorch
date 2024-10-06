@@ -72,6 +72,12 @@ class CppWrapperCpuArrayRef(CppWrapperCpu):
         self.allow_stack_allocation: Optional[bool] = None
         self.stack_allocated_buffers: Dict[BufferName, ir.Buffer] = {}
 
+    @staticmethod
+    def create(is_subgraph, subgraph_name, parent_wrapper):
+        # TODO - support subgraph codegen by lifting functions. Check the
+        # comment at CppWrapperCpu `codegen_subgraph` function.
+        return CppWrapperCpuArrayRef()
+
     def memory_plan(self):
         from .memory_planning import MemoryPlanner
 
