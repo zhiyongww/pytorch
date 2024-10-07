@@ -198,9 +198,13 @@ std::tuple<int64_t, at::Tensor> _cslt_sparse_mm_impl(
   cusparseComputeType compute_type;
   auto compression_factor = 9;
 
-  #ifdef USE_ROCM
-    TORCH_CHECK(isHipSparseLtSupported(compressed_A.device().index()), "hipSPARSELt not supported on this platform.");
-  #endif
+#ifdef USE_ROCM
+    int device_index = at::cuda::current_device();
+    TORCH_CHECK(isHipSparseLtSupported(device_index), 
+                "hipSPARSELt is not supported on this device. ",
+                "Supported architectures are: gfx940, gfx941, gfx942, gfx1200, gfx1201. ",
+                "Also, ROCm version must be >= 6.2.0");
+#endif
 
   switch(compressed_A.scalar_type())
   {
