@@ -288,7 +288,7 @@ std::tuple<int64_t, at::Tensor> _cslt_sparse_mm_impl(
                 output_type = CUDA_R_16F;
                 break;
             case at::ScalarType::BFloat16:
-                C_type = <<<<<<< hipSPARSELt_rocmCUDA_R_16BF;
+                C_type = CUDA_R_16BF;
                 output_type = CUDA_R_16BF;
                 break;
             case at::ScalarType::Int:
