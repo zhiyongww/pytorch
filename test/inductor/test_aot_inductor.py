@@ -718,6 +718,10 @@ class AOTInductorTestsTemplate:
     )
     @skipIfRocm  # _scaled_mm_out_cuda  is not compiled for ROCm platform
     def test_fp8(self):
+        # cuda only
+        if self.device != "cuda":
+            return
+
         class Model(torch.nn.Module):
             def __init__(self, dtype):
                 super().__init__()
@@ -1541,6 +1545,41 @@ class AOTInductorTestsTemplate:
                 optimized = AOTIRunnerUtil.load("cuda", so_path)
                 result_cuda = optimized(*example_inputs)
             self.assertTrue(same(result_cpu, result_cuda.cpu()))
+
+    @requires_multigpu()
+    def test_on_cuda_device1(self):
+        if self.device != "cuda":
+            raise unittest.SkipTest("requires CUDA")
+
+        try:
+            torch.cuda.get_device_properties(1)
+        except AssertionError:
+            raise unittest.SkipTest("CUDA device 1 is not available") from None
+
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.fc1 = torch.nn.Linear(10, 16)
+                self.relu = torch.nn.ReLU()
+                self.fc2 = torch.nn.Linear(16, 1)
+                self.sigmoid = torch.nn.Sigmoid()
+
+            def forward(self, x):
+                x = self.fc1(x)
+                x = self.relu(x)
+                x = self.fc2(x)
+                x = self.sigmoid(x)
+                return x
+
+        device = "cuda:1"
+        model = Model().to(device)
+        example_inputs = (torch.randn(8, 10, device=device),)
+        expected = model(*example_inputs)
+
+        so_path = AOTIRunnerUtil.compile(model, example_inputs)
+        optimized = AOTIRunnerUtil.load(device, so_path)
+        actual = optimized(*example_inputs)
+        torch.testing.assert_close(actual, expected)
 
     def test_pytree_inputs(self):
         class M(torch.nn.Module):
@@ -2964,6 +3003,10 @@ class AOTInductorTestsTemplate:
     @unittest.skipIf(TEST_WITH_ROCM, "FP8 is not supported on ROCM")
     @unittest.skipIf(not SM90OrLater, "FP8 is only supported on H100+")
     def test_runtime_checks_fp8(self):
+        # cuda only
+        if self.device != "cuda":
+            return
+
         class Model(torch.nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -3591,12 +3634,8 @@ def fail_non_abi_compatible_cuda(is_skip=False):
 CPU_TEST_FAILURES = {
     # TODO: error: ‘complex64’ was not declared in this scope
     "test_add_complex": fail_minimal_arrayref_interface(is_skip=True),
-    # TODO: test_conv_freezing_abi_compatible_cpu fails,
-    #   AssertionError: None, i.e. optional output is not supported
-    "test_conv_freezing": fail_with_and_without_stack_allocation(is_skip=True),
-    # TODO: test_deconv_freezing_abi_compatible_cpu fails,
-    #   AssertionError: None, i.e. optional output is not supported
-    "test_deconv_freezing": fail_with_and_without_stack_allocation(is_skip=True),
+    "test_conv_freezing": fail_minimal_arrayref_interface(is_skip=True),
+    "test_deconv_freezing": fail_minimal_arrayref_interface(is_skip=True),
     # FIXME: failed with Segfault while exiting the Python runtime
     "test_duplicate_constant_folding": fail_with_and_without_stack_allocation(
         is_skip=True
@@ -3614,12 +3653,8 @@ CPU_TEST_FAILURES = {
     "test_dynamic_scalar": fail_minimal_arrayref_interface(is_skip=True),
     # https://github.com/pytorch/pytorch/issues/122980
     "test_fft_c2c": fail_stack_allocation(is_skip=True),
-    # TODO: test_freezing_abi_compatible_cpu fails,
-    #   AssertionError: None, i.e. optional output is not supported
-    "test_freezing": fail_with_and_without_stack_allocation(is_skip=True),
-    # TODO: test_linear_freezing_abi_compatible_cpu fails,
-    #   AssertionError: None, i.e. optional output is not supported
-    "test_linear_freezing": fail_with_and_without_stack_allocation(is_skip=True),
+    "test_freezing": fail_minimal_arrayref_interface(is_skip=True),
+    "test_linear_freezing": fail_minimal_arrayref_interface(is_skip=True),
     # FIXME: failed with Segfault while exiting the Python runtime
     "test_missing_cubin": fail_with_and_without_stack_allocation(is_skip=True),
     # minimal arrayref interface only works with CPU; test crashes.
@@ -3716,8 +3751,6 @@ CUDA_TEST_FAILURES = {
     "test_quantized_linear": fail_cuda(is_skip=True),
     "test_quanatized_int8_linear": fail_cuda(is_skip=True),
     "test_custom_op_add": fail_non_abi_compatible_cuda(is_skip=True),
-    # fp8 to be re-enabled for AOTI
-    "test_fp8": fail_cuda(is_skip=True),
     "test_custom_op_all_inputs": fail_non_abi_compatible_cuda(is_skip=True),
     "test_custom_op_missing_arg_with_default_value": fail_non_abi_compatible_cuda(
         is_skip=True
