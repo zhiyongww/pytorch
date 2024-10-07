@@ -156,7 +156,7 @@ CUDA_TYPE_NAME_MAP = collections.OrderedDict(
         ("cudaChannelFormatDesc", "hipChannelFormatDesc"),
         ("cudaResourceDesc", "hipResourceDesc"),
         ("cudaResourceViewDesc", "hipResourceViewDesc"),
-        ("cudaTextureDesc", "hipTextureDesc"),>>>>>>> main
+        ("cudaTextureDesc", "hipTextureDesc"),
         ("surfaceReference", "hipSurfaceReference"),
         ("cudaTextureObject_t", "hipTextureObject_t"),
         ("cudaResourceType", "hipResourceType"),
@@ -2286,7 +2286,18 @@ CUDA_IDENTIFIER_MAP = collections.OrderedDict(
         ("cufftGetSize3d", "hipfftGetSize3d"),
         ("cufftGetSizeMany", "hipfftGetSizeMany"),
         ("cufftGetSize", "hipfftGetSize"),
-        ("cufftSetWorkArea", "hipfftSetWorkArea"),, CONV_MATH_FUNC, API_SPECIAL)),
+        ("cufftSetWorkArea", "hipfftSetWorkArea"),
+        ("cufftSetAutoAllocation", "hipfftSetAutoAllocation"),
+        ("cufftXtExec", "hipfftXtExec"),
+        ("cufftXtMakePlanMany", "hipfftXtMakePlanMany"),
+        ("cufftExecC2C", "hipfftExecC2C"),
+        ("cufftExecR2C", "hipfftExecR2C"),
+        ("cufftExecC2R", "hipfftExecC2R"),
+        ("cufftExecZ2Z", "hipfftExecZ2Z"),
+        ("cufftExecD2Z", "hipfftExecD2Z"),
+        ("cufftExecZ2D", "hipfftExecZ2D"),
+        ("cufftSetStream", "hipfftSetStream"),
+        ("cufftDestroy", "hipfftDestroy"),
         ("cufftGetVersion", "hipfftGetVersion"),
         ("cufftGetProperty", "hipfftGetProperty"),
         ("nvrtcResult", "hiprtcResult"),
@@ -2407,7 +2418,7 @@ CUDA_SPECIAL_MAP = collections.OrderedDict(
         ("cusparseLtMatmul", "hipsparseLtMatmul"),
         ("cusparseLtMatDescriptorDestroy", "hipsparseLtMatDescriptorDestroy"),
         ("cusparseLtMatmulPlanDestroy", "hipsparseLtMatmulPlanDestroy"),
-        #sparse
+        # Sparse
         ("cusparseStatus_t", "hipsparseStatus_t"),
         ("cusparseHandle_t", "hipsparseHandle_t"),
         ("cuComplex", "hipComplex"),
@@ -2714,7 +2725,7 @@ CUDA_SPECIAL_MAP = collections.OrderedDict(
         ("cusolverDnCgesvdaStridedBatched", "hipsolverDnCgesvdaStridedBatched"),
         ("cusolverDnZgesvdaStridedBatched", "hipsolverDnZgesvdaStridedBatched"),
         ("cusolverDnXgesvdjSetTolerance", "hipsolverDnXgesvdjSetTolerance"),
-        ("cusolverDnXgesvdjSetMaxSweeps", "hipsolverDnXgesvdjSetMaxSweeps"),>>>>>>> main
+        ("cusolverDnXgesvdjSetMaxSweeps", "hipsolverDnXgesvdjSetMaxSweeps"),
     ]
 )
 
